@@ -4,8 +4,10 @@ project(travel-companion C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 
+add_subdirectory(drivers/bme680)
+
 add_executable(travel-companion main.c)
-target_link_libraries(travel-companion pico_stdlib hardware_i2c)
+target_link_libraries(travel-companion pico_stdlib hardware_i2c bme680_port)
 
 pico_enable_stdio_usb(travel-companion 1)
 pico_enable_stdio_uart(travel-companion 0)

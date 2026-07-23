@@ -1,3 +1,4 @@
+#include "drivers/bme680/bme680.h"
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
 #include <stdio.h>
@@ -6,32 +7,39 @@
 #define I2C_SCL_PIN 3
 #define I2C_PORT i2c1
 #define ADDR_BME680 0x77
+#define I2C_BAUDRATE 100000
+
+int bme680_port_i2c_read(void *ctx, uint8_t dev_addr, uint8_t reg_addr,
+                         uint8_t *data, uint8_t length);
+
+int bme680_port_i2c_write(void *ctx, uint8_t dev_addr, uint8_t reg_addr,
+                          const uint8_t *data, uint8_t length);
 
 int main() {
   stdio_init_all();
-  sleep_ms(2000);
-
-  i2c_init(I2C_PORT, 100 * 1000);
+  sleep_ms(1000);
+  i2c_init(I2C_PORT, I2C_BAUDRATE);
   gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
   gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
   gpio_pull_up(I2C_SDA_PIN);
   gpio_pull_up(I2C_SCL_PIN);
 
-  while (true) {
+  bme680_t *bme680 = bme680_create(I2C_PORT, ADDR_BME680, bme680_port_i2c_read,
+                                   bme680_port_i2c_write);
 
-    printf("Wysylanie danych do BME680\n");
-    uint8_t bme_reg[1] = {0xD0};
-    uint8_t bme_id[1] = {0x00};
-    int result = i2c_write_blocking(I2C_PORT, ADDR_BME680, &bme_reg[0], 1, true);
-    if (result < 0) {
-      printf("Blad podczas wysylania danych do BME680\n");
-    }
-    result = i2c_read_blocking(I2C_PORT, ADDR_BME680, &bme_id[0], 1, false);
-    if (result < 0) {
-      printf("Blad podczas odczytu danych z BME680\n");
+  if (bme680 == NULL) {
+    printf("Failed to create BME680 instance\n");
+  }
+  while (true) {
+    sleep_ms(1000);
+    uint8_t chip_id = 0;
+
+    bme680_status_t status = bme680_read_chip_id(bme680, &chip_id);
+    if (status != BME680_OK) {
+      printf("Failed to read chip ID: %d\n", status);
     } else {
-      printf("Odczytano dane z BME680: 0x%02X\n", bme_id[0]);
+      printf("Chip ID: 0x%02X\n", chip_id);
     }
-    sleep_ms(50000);
+    sleep_ms(1000);
   }
 }
