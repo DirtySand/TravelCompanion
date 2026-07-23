@@ -29,9 +29,10 @@ int main() {
 
   if (bme680 == NULL) {
     printf("Failed to create BME680 instance\n");
+    return -1;
   }
+  
   while (true) {
-    sleep_ms(1000);
     uint8_t chip_id = 0;
 
     bme680_status_t status = bme680_read_chip_id(bme680, &chip_id);
