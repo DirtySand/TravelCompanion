@@ -31,16 +31,17 @@ int main() {
     printf("Failed to create BME680 instance\n");
     return -1;
   }
+  uint8_t chip_id = 0;
+
+  bme680_status_t status = bme680_read_chip_id(bme680, &chip_id);
+  if (status != BME680_OK) {
+    printf("Failed to read chip ID: %d\n", status);
+  } else {
+    printf("Chip ID: 0x%02X\n", chip_id);
+  }
+  sleep_ms(1000);
   
   while (true) {
-    uint8_t chip_id = 0;
-
-    bme680_status_t status = bme680_read_chip_id(bme680, &chip_id);
-    if (status != BME680_OK) {
-      printf("Failed to read chip ID: %d\n", status);
-    } else {
-      printf("Chip ID: 0x%02X\n", chip_id);
-    }
-    sleep_ms(1000);
+    tight_loop_contents();
   }
 }
