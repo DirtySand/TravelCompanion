@@ -31,15 +31,25 @@ int main() {
     printf("Failed to create BME680 instance\n");
     return -1;
   }
-  
-  while (true) {
-    uint8_t chip_id = 0;
+  uint8_t chip_id = 0;
 
-    bme680_status_t status = bme680_read_chip_id(bme680, &chip_id);
+  bme680_status_t status = bme680_read_chip_id(bme680, &chip_id);
+  if (status != BME680_OK) {
+    printf("Failed to read chip ID: %d\n", status);
+  } else {
+    printf("Chip ID: 0x%02X\n", chip_id);
+  }
+
+  while (true) {
+    float temperature, pressure, humidity;
+    printf("Starting forced measurement...\n");
+    status = bme680_read_measurement_forced(bme680, &temperature, &pressure,
+                                            &humidity);
     if (status != BME680_OK) {
-      printf("Failed to read chip ID: %d\n", status);
+      printf("Failed to read measurement: %d\n", status);
     } else {
-      printf("Chip ID: 0x%02X\n", chip_id);
+      printf("Temperature: %.2f°C, Pressure: %.2f hPa, Humidity: %.2f %%\n",
+             temperature, pressure / 100, humidity);
     }
     sleep_ms(1000);
   }
