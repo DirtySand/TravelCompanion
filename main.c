@@ -39,9 +39,18 @@ int main() {
   } else {
     printf("Chip ID: 0x%02X\n", chip_id);
   }
-  sleep_ms(1000);
-  
+
   while (true) {
-    tight_loop_contents();
+    float temperature, pressure, humidity;
+    printf("Starting forced measurement...\n");
+    status = bme680_read_measurement_forced(bme680, &temperature, &pressure,
+                                            &humidity);
+    if (status != BME680_OK) {
+      printf("Failed to read measurement: %d\n", status);
+    } else {
+      printf("Temperature: %.2f°C, Pressure: %.2f hPa, Humidity: %.2f %%\n",
+             temperature, pressure / 100, humidity);
+    }
+    sleep_ms(1000);
   }
 }
