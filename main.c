@@ -1,3 +1,4 @@
+#include "drivers/SSD1351U3/ssd1351.h"
 #include "drivers/bme680/bme680.h"
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
@@ -40,7 +41,14 @@ int main() {
     printf("Chip ID: 0x%02X\n", chip_id);
   }
 
+  ssd1351_port_hw_init();
+  ssd1351_io_t io = ssd1351_port_get_io();
+  ssd1351_t *oled = ssd1351_get_instance();
+  ssd1351_init(oled, &io);
+  ssd1351_fill(oled, 0x0000);
+
   while (true) {
+
     float temperature, pressure, humidity;
     printf("Starting forced measurement...\n");
     status = bme680_read_measurement_forced(bme680, &temperature, &pressure,
@@ -51,6 +59,16 @@ int main() {
       printf("Temperature: %.2f°C, Pressure: %.2f hPa, Humidity: %.2f %%\n",
              temperature, pressure / 100, humidity);
     }
+
+    char buffer[24];
+    uint16_t fg_color = 0xFFFF;
+    uint16_t bg_color = 0x0000;
+    snprintf(buffer, sizeof(buffer), "Temp: %.1f" "\x7f" "C", temperature);
+    ssd1351_draw_string(oled, 0, 0, buffer, fg_color, bg_color);
+    snprintf(buffer, sizeof(buffer), "Pres: %.2f hPa", pressure / 100);
+    ssd1351_draw_string(oled, 0, 10, buffer, fg_color, bg_color);
+    snprintf(buffer, sizeof(buffer), "Hum:  %.2f %%", humidity);
+    ssd1351_draw_string(oled, 0, 20, buffer, fg_color, bg_color);
     sleep_ms(1000);
   }
 }

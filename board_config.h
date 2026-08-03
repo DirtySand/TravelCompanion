@@ -1,0 +1,11 @@
+#ifndef BOARD_CONFIG_H
+#define BOARD_CONFIG_H
+
+#define SSD1351_SPI spi0
+#define SSD1351_PIN_CLK 6
+#define SSD1351_PIN_DIN 7
+#define SSD1351_PIN_CS 13
+#define SSD1351_PIN_DC 11
+#define SSD1351_PIN_RST 12
+
+#endif // BOARD_CONFIG_H
