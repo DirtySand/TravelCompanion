@@ -1,0 +1,7 @@
+add_library(font_8x8 STATIC fonts/font_8x8/font_8x8.c)
+target_include_directories(font_8x8 PUBLIC ${CMAKE_CURRENT_LIST_DIR}/fonts/font_8x8)
+add_library(ssd1351 STATIC ssd1351.c)
+target_include_directories(ssd1351 PUBLIC ${CMAKE_CURRENT_LIST_DIR})
+target_link_libraries(ssd1351 PUBLIC font_8x8)
+add_library(ssd1351_port STATIC ssd1351_port.c)
+target_link_libraries(ssd1351_port PUBLIC ssd1351 board_config hardware_spi hardware_gpio pico_stdlib)

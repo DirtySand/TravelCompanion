@@ -5,9 +5,11 @@ set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 
 add_subdirectory(drivers/bme680)
-
+add_subdirectory(drivers/SSD1351U3)
 add_executable(travel-companion main.c)
-target_link_libraries(travel-companion pico_stdlib hardware_i2c bme680_port)
+target_link_libraries(travel-companion pico_stdlib hardware_i2c bme680_port ssd1351_port)
+add_library(board_config INTERFACE)
+target_include_directories(board_config INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
 pico_enable_stdio_usb(travel-companion 1)
 pico_enable_stdio_uart(travel-companion 0)
