@@ -1,7 +1,7 @@
 #ifndef ds3231_config_h
 #define ds3231_config_h
 
-#define STATUS_REG 0x0F
+#define DS3231_STATUS_REG 0x0F
 
 #define DS3231_OSF_BIT 7
 #define DS3231_BUSY_BIT 2
@@ -25,5 +25,7 @@
 #define DS3231_A2M2_REG 0x0B
 #define DS3231_A2M3_REG 0x0C
 #define DS3231_A2M4_REG 0x0D
+#define DS3231_ALARM_MASK_BIT 7
+#define DS3231_ALARM_DAY_DATE_BIT 6
 
 #endif

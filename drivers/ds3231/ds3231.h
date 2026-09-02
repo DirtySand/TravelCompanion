@@ -7,11 +7,32 @@ typedef enum {
   DS3231_OK,
   DS3231_I2C_ERROR,
   DS3231_NULL_PTR,
-  DS3231_IS_READY,
-  DS3231_TIMEOUT,
   DS3231_TIME_NOT_SET,
   DS3231_ALARM_NOT_SET,
 } ds3231_status_t;
+
+typedef enum {
+  DS3231_ALARM1_EVERY_SECOND,
+  DS3231_ALARM1_MATCH_SECONDS,
+  DS3231_ALARM1_MATCH_MINUTES_SECONDS,
+  DS3231_ALARM1_MATCH_HOURS_MINUTES_SECONDS,
+  DS3231_ALARM1_MATCH_DATE,
+  DS3231_ALARM1_MATCH_DAY_OF_WEEK,
+}ds3231_alarm1_rate_t;
+
+typedef enum {
+  DS3231_ALARM2_EVERY_MINUTE,
+  DS3231_ALARM2_MATCH_MINUTES,
+  DS3231_ALARM2_MATCH_HOURS_MINUTES,
+  DS3231_ALARM2_MATCH_DATE,
+  DS3231_ALARM2_MATCH_DAY_OF_WEEK,
+}ds3231_alarm2_rate_t;
+
+typedef struct{
+  uint8_t seconds, minutes, hours;
+  uint8_t day_of_week;
+  uint8_t day, month, year;
+} ds3231_datetime_t;
 
 typedef struct ds3231 ds3231_t;
 
@@ -35,8 +56,9 @@ ds3231_status_t ds3231_set_time(ds3231_t *dev, uint8_t hours, uint8_t minutes, u
 ds3231_status_t ds3231_read_date(ds3231_t *dev, uint8_t *day, uint8_t *month, uint8_t *year);
 ds3231_status_t ds3231_set_date(ds3231_t *dev, uint8_t day, uint8_t month, uint8_t year);
 ds3231_status_t ds3231_read_alarm_1(ds3231_t *dev);
-ds3231_status_t ds3231_set_alarm_1(ds3231_t *dev, uint8_t hours, uint8_t minutes, uint8_t seconds, uint8_t day_of_week);
+ds3231_status_t ds3231_set_alarm_1(ds3231_t *dev, uint8_t hours, uint8_t minutes, uint8_t seconds, uint8_t day_or_date, ds3231_alarm1_rate_t rate);
 ds3231_status_t ds3231_read_alarm_2(ds3231_t *dev);
-ds3231_status_t ds3231_set_alarm_2(ds3231_t *dev, uint8_t hours, uint8_t minutes, uint8_t day_of_week);
+ds3231_status_t ds3231_set_alarm_2(ds3231_t *dev, uint8_t hours, uint8_t minutes, uint8_t day_or_date, ds3231_alarm2_rate_t rate);
+ds3231_status_t ds3231_read_datetime(ds3231_t *dev, ds3231_datetime_t *datetime);
 
 #endif

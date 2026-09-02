@@ -1,9 +1,11 @@
 #include "drivers/SSD1351U3/ssd1351.h"
 #include "drivers/bme680/bme680.h"
 #include "drivers/ds3231/ds3231.h"
-#include "ds3231.h"
+#include "drivers/ds3231/ds3231_config.h"
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
+#include "timezone.h"
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -13,6 +15,7 @@
 #define BME680_I2C_ADDRESS 0x77
 #define DS3231_I2C_ADDRESS 0x68
 #define I2C_BAUDRATE 100000
+#define CENTURY_BASE 2000
 
 int bme680_port_i2c_read(void *ctx, uint8_t dev_addr, uint8_t reg_addr,
                          uint8_t *data, uint8_t length);
@@ -82,11 +85,27 @@ int main() {
              temperature, pressure / 100, humidity);
     }
 
-    uint8_t seconds, minutes, hours, day, month, year;
-    ds3231_status = ds3231_read_time(ds3231, &seconds, &minutes, &hours);
-    printf("ds3231 read time status: %d\n", ds3231_status);
-    ds3231_status = ds3231_read_date(ds3231, &day, &month, &year);
-    printf("ds3231 read date status: %d\n", ds3231_status);
+    uint8_t seconds, minutes, hours, hours_utc, day, month, year;
+    uint16_t year_with_century;
+    ds3231_datetime_t datetime;
+    ds3231_status = ds3231_read_datetime(ds3231, &datetime);
+    if (ds3231_status != DS3231_OK) {
+      printf("Failed to read datetime: %d\n", ds3231_status);
+    } else {
+      seconds = datetime.seconds;
+      minutes = datetime.minutes;
+      hours_utc = datetime.hours;
+      day = datetime.day;
+      month = datetime.month;
+      year = datetime.year;
+    }
+    year_with_century = CENTURY_BASE + year;
+    if (is_dst_active(day, month, year_with_century, hours_utc)) {
+      hours = hours_utc + 1;
+    } else {
+      hours = hours_utc;
+    }
+    hours %= 24;
 
     char buffer[64];
     uint16_t fg_color = 0xFFFF;
@@ -103,9 +122,10 @@ int main() {
     ssd1351_draw_string(oled, 0, 20, buffer, fg_color, bg_color);
     snprintf(buffer, sizeof(buffer), "Time: %d:%d:%d", hours, minutes, seconds);
     ssd1351_draw_string(oled, 0, 30, buffer, fg_color, bg_color);
-    snprintf(buffer, sizeof(buffer), "Date: %d-%d-20%d", day, month, year);
+    snprintf(buffer, sizeof(buffer), "Date: %d-%d-%d", day, month,
+             year_with_century);
     ssd1351_draw_string(oled, 0, 40, buffer, fg_color, bg_color);
-    
+
     sleep_ms(1000);
   }
 }
