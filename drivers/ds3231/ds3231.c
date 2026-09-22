@@ -2,7 +2,6 @@
 #include "ds3231_config.h"
 #include "ds3231_internal.h"
 #include <stddef.h>
-#include <stdint.h>
 
 static ds3231_t instance;
 static int instance_used = 0;
@@ -286,4 +285,41 @@ ds3231_status_t ds3231_read_datetime(ds3231_t *dev,
   datetime->day = buffer[4];
   datetime->month = buffer[5];
   datetime->year = buffer[6];
+  return DS3231_OK;
+}
+
+ds3231_status_t ds3231_enable_alarm1_interrupt(ds3231_t *dev, bool enable) {
+  if (dev == NULL) {
+    return DS3231_NULL_PTR;
+  }
+  uint8_t control_reg;
+  int result = dev->i2c_read(dev->ctx, dev->dev_addr, DS3231_CONTROL_REG,
+                             &control_reg, 1);
+  if (result < 0) {
+    return DS3231_I2C_ERROR;
+  }
+
+  control_reg |= (1 << DS3231_INTCN_BIT);
+  if (enable) {
+    control_reg |= (1 << DS3231_A1IE_BIT);
+  } else {
+    control_reg &= ~(1 << DS3231_A1IE_BIT);
+  }
+  result = dev->i2c_write(dev->ctx, dev->dev_addr, DS3231_CONTROL_REG,
+                          &control_reg, 1);
+  return (result < 0) ? DS3231_I2C_ERROR : DS3231_OK;
+}
+
+ds3231_status_t ds3231_is_alarm1_triggered(ds3231_t *dev, bool *triggered) {
+  if (dev == NULL || triggered == NULL) {
+    return DS3231_NULL_PTR;
+  }
+  return ds3231_read_bit(dev, DS3231_STATUS_REG, DS3231_A1F_BIT, triggered);
+}
+
+ds3231_status_t ds3231_clear_alarm1_flag(ds3231_t *dev) {
+  if (dev == NULL) {
+    return DS3231_NULL_PTR;
+  }
+  return ds3231_write_bit(dev, DS3231_STATUS_REG, DS3231_A1F_BIT, 0);
 }

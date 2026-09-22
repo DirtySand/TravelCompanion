@@ -9,10 +9,9 @@ static uint8_t day_of_week_for_date(uint8_t day, uint8_t month, uint16_t year) {
     year -= 1;
     month += 12;
   }
-  int day_of_week =
-      (day + 13 * (month + 1) / 5 + year % 100 + (year % 100) / 4 +
-       (year / 100) / 4 - 2 * (year / 100)) %
-      7;
+  int day_of_week = (day + 13 * (month + 1) / 5 + year % 100 +
+                     (year % 100) / 4 + (year / 100) / 4 - 2 * (year / 100)) %
+                    7;
   if (day_of_week < 0) {
     day_of_week += 7;
   }
