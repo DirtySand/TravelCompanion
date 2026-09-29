@@ -9,6 +9,7 @@
 #include "pico/stdlib.h"
 #include "power.h"
 #include "timezone.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
 
@@ -42,10 +43,19 @@ static void button_isr(uint gpio, uint32_t events) {
   }
 }
 
+static uint8_t local_hours(const ds3231_datetime_t *datetime) {
+  uint16_t full_year = CENTURY_BASE + datetime->year;
+  uint8_t hours = datetime->hours;
+  if (is_dst_active(datetime->day, datetime->month, full_year, hours)) {
+    hours = (hours + 1) % 24;
+  }
+  return hours;
+}
+
 static void display_datetime_local(ssd1351_t *oled,
                                    const ds3231_datetime_t *datetime) {
   uint16_t full_year = CENTURY_BASE + datetime->year;
-  uint8_t hours = datetime->hours;
+  uint8_t hours = local_hours(datetime);
   if (is_dst_active(datetime->day, datetime->month, full_year, hours)) {
     hours = (hours + 1) % 24;
   }
@@ -58,6 +68,14 @@ static void display_datetime_local(ssd1351_t *oled,
   snprintf(buffer, sizeof(buffer), "Date: %02d-%02d-%04d", datetime->day,
            datetime->month, full_year);
   ssd1351_draw_string(oled, 0, 40, buffer, fg_color, bg_color);
+}
+
+static void display_backpack_clock(ssd1351_t *oled, const ds3231_datetime_t *datetime) {
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "Date: %02d:%02d:%04d", datetime->day, datetime->month, CENTURY_BASE + datetime->year);
+  ssd1351_draw_string(oled, 0, 30, buffer, 0x3000, 0x0000);
+  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d", local_hours(datetime), datetime->minutes);
+  ssd1351_draw_string(oled, 0, 40, buffer, 0x3000, 0x0000);
 }
 
 static void display_sensor_data(ssd1351_t *oled, float temperature,
@@ -202,6 +220,11 @@ int main() {
         } else {
           mode = MODE_BACKPACK;
           ssd1351_fill(oled, 0x0000);
+          ssd1351_draw_string(oled, 0, 0, "Backpack mode", 0x2000, 0x0000);
+          ds3231_datetime_t current_time;
+          if(ds3231_read_datetime(ds3231, &current_time) == DS3231_OK) {
+            display_backpack_clock(oled, &current_time);
+          }
         }
       }
       sleep_ms(1000);
@@ -217,6 +240,10 @@ int main() {
       ds3231_is_alarm1_triggered(ds3231, &alarm_triggered);
       if (alarm_triggered) {
         take_sample(bme680, ds3231);
+        ds3231_datetime_t current_time;
+        if(ds3231_read_datetime(ds3231, &current_time) == DS3231_OK) {
+          display_backpack_clock(oled, &current_time);
+        }
       }
       if (button_event || gpio_get(BUTTON_PIN) == 0) {
         button_event = false;
