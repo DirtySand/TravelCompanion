@@ -147,6 +147,7 @@ int main() {
   ssd1351_io_t io = ssd1351_port_get_io();
   ssd1351_t *oled = ssd1351_get_instance();
   ssd1351_init(oled, &io);
+  ssd1351_set_rotation(oled, SSD1351_ROT_90);
   ssd1351_fill(oled, 0x0000);
 
   ds3231_t *ds3231 = ds3231_create(I2C_PORT, DS3231_I2C_ADDRESS,

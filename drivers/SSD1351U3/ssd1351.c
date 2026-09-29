@@ -2,6 +2,10 @@
 #include "fonts/font_8x8/font_8x8.h"
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+#define SSD1351_REMAP_BASE 0x74
+#define SSD1351_REMAP_VERTICAL_ADDRESS_INCREMENT (1u << 0)
+#define SSD1351_REMAP_COLUMN_REVERSE (1u << 1)
+#define SSD1351_REMAP_COM_SCAN_REVERSE (1u << 4)
 
 typedef struct {
   uint8_t cmd;
@@ -12,6 +16,7 @@ typedef struct {
 
 struct ssd1351 {
   ssd1351_io_t io;
+  uint8_t swap_xy;
 };
 
 static const init_cmd_t init_seq[] = {
@@ -21,7 +26,7 @@ static const init_cmd_t init_seq[] = {
     {0xB3, {0xF1}, 1, 0},
     {0xCA, {0x7F}, 1, 0},
     {0xA2, {0x00}, 1, 0},
-    {0xA0, {0x74}, 1, 0},
+    {0xA0, {SSD1351_REMAP_BASE}, 1, 0},
     {0x15, {0x00, 0x7F}, 2, 0},
     {0x75, {0x00, 0x7F}, 2, 0},
     {0xB5, {0x00}, 1, 0},
@@ -67,14 +72,20 @@ void ssd1351_init(ssd1351_t *dev, const ssd1351_io_t *io) {
     dev->io = *io;
     ssd1351_reset(dev);
     run_init_sequence(dev);
+    dev->swap_xy = 0;
 }
 
 void ssd1351_set_window(ssd1351_t *dev, uint8_t x0, uint8_t y0,
                         uint8_t x1, uint8_t y1) {
-    uint8_t col[] = { x0, x1 };
-    uint8_t row[] = { y0, y1 };
-    write_command(dev, 0x15); write_data(dev, col, 2);
-    write_command(dev, 0x75); write_data(dev, row, 2);
+    uint8_t xr[] = { x0, x1 };
+    uint8_t yr[] = { y0, y1 };
+    if (dev->swap_xy) {
+        write_command(dev, 0x15); write_data(dev, yr, 2);
+        write_command(dev, 0x75); write_data(dev, xr, 2);
+    } else {
+        write_command(dev, 0x15); write_data(dev, xr, 2);
+        write_command(dev, 0x75); write_data(dev, yr, 2);
+    }
     write_command(dev, 0x5C);
 }
 
@@ -130,4 +141,18 @@ void ssd1351_draw_string(ssd1351_t *dev, uint8_t x, uint8_t y,
         if (x > 120) break;
         s++;
     }
+}
+
+void ssd1351_set_rotation(ssd1351_t *dev, ssd1351_rotation_t rotation) {
+    static const uint8_t xor_mask[4] = {
+        [SSD1351_ROT_0] = 0,
+        [SSD1351_ROT_90] = SSD1351_REMAP_VERTICAL_ADDRESS_INCREMENT | SSD1351_REMAP_COLUMN_REVERSE,
+        [SSD1351_ROT_180] = SSD1351_REMAP_COLUMN_REVERSE | SSD1351_REMAP_COM_SCAN_REVERSE,
+        [SSD1351_ROT_270] = SSD1351_REMAP_VERTICAL_ADDRESS_INCREMENT | SSD1351_REMAP_COM_SCAN_REVERSE,
+    };
+    if (rotation > SSD1351_ROT_270) return;
+    uint8_t remap = SSD1351_REMAP_BASE ^ xor_mask[rotation];
+    write_command(dev, 0xA0);
+    write_data(dev, &remap, 1);
+    dev->swap_xy = (rotation == SSD1351_ROT_90 || rotation == SSD1351_ROT_270);
 }
