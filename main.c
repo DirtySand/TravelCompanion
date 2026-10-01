@@ -46,14 +46,11 @@ static void button_isr(uint gpio, uint32_t events) {
 static void display_datetime_local(ssd1351_t *oled,
                                    const ds3231_datetime_t *datetime) {
   uint16_t full_year = CENTURY_BASE + datetime->year;
-  uint8_t hours = datetime->hours;
-  if (is_dst_active(datetime->day, datetime->month, full_year, hours)) {
-    hours = (hours + 1) % 24;
-  }
   char buffer[32];
   uint16_t fg_color = 0xFFFF;
   uint16_t bg_color = 0x0000;
-  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d:%02d", hours,
+  datetime_to_local((ds3231_datetime_t *)datetime, (ds3231_datetime_t *)datetime, CENTURY_BASE);
+  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d:%02d", datetime->hours,
            datetime->minutes, datetime->seconds);
   ssd1351_draw_string(oled, 0, 30, buffer, fg_color, bg_color);
   snprintf(buffer, sizeof(buffer), "Date: %02d-%02d-%04d", datetime->day,
@@ -65,11 +62,8 @@ static void display_backpack_clock(ssd1351_t *oled,
                                    const ds3231_datetime_t *datetime) {
   char buffer[32];
   uint16_t full_year = CENTURY_BASE + datetime->year;
-  uint8_t hours = datetime->hours;
-  if (is_dst_active(datetime->day, datetime->month, full_year, hours)) {
-    hours = (hours + 1) % 24;
-  }  
-  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d", hours, datetime->minutes);
+  datetime_to_local((ds3231_datetime_t *)datetime, (ds3231_datetime_t *)datetime, CENTURY_BASE);
+  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d", datetime->hours, datetime->minutes);
   ssd1351_draw_string(oled, 0, 30, buffer, 0x3000, 0x0000);
   snprintf(buffer, sizeof(buffer), "Date: %02d-%02d-%04d", datetime->day,
            datetime->month, CENTURY_BASE + datetime->year);

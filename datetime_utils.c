@@ -1,5 +1,6 @@
 #include "datetime_utils.h"
 #include "drivers/ds3231/ds3231.h"
+#include "timezone.h"
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -57,5 +58,16 @@ void datetime_add_seconds(ds3231_datetime_t *datetime, int seconds,
       }
     }
     total_days--;
+  }
+}
+
+void datetime_to_local(const ds3231_datetime_t *datetime, ds3231_datetime_t *local_datetime, uint16_t century_base) {
+  if (datetime == NULL || local_datetime == NULL) {
+    return;
+  }
+  *local_datetime = *datetime;
+  uint16_t full_year = century_base + local_datetime->year;
+  if (is_dst_active(datetime->day, datetime->month, full_year, datetime->hours)) {
+    datetime_add_seconds(local_datetime, 3600, century_base);
   }
 }
