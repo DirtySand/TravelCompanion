@@ -4,6 +4,8 @@
 #include "drivers/bme680/bme680.h"
 #include "drivers/ds3231/ds3231.h"
 #include "drivers/ds3231/ds3231_config.h"
+#include "drivers/sht40/sht40.h"
+#include "drivers/sht40/sht40_port.h"
 #include "hardware/clocks.h"
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
@@ -38,7 +40,7 @@ static void button_isr(uint gpio, uint32_t events) {
     return;
   }
   last_interrupt_time = current_time;
-  if (gpio == BUTTON_PIN && (events & GPIO_IRQ_EDGE_FALL)) {
+  if (gpio == BUTTON_PIN_0 && (events & GPIO_IRQ_EDGE_FALL)) {
     button_event = true;
   }
 }
@@ -100,12 +102,34 @@ static ds3231_status_t arm_next_alarm(ds3231_t *dev) {
                             DS3231_ALARM1_MATCH_DATE);
 }
 
-static void take_sample(bme680_t *bme680, ds3231_t *ds3231) {
+static bool read_environment(sht40_t *sht40, bme680_t *bme680,
+                             float *temperature, float *humidity,
+                             float *pressure) {
+  bool ok = true;
+
+  sht40_status_t sht40_status =
+      sht40_measure(sht40, SHT40_PRECISION_HIGH, temperature, humidity);
+  if (sht40_status != SHT40_OK) {
+    printf("SHT40 measurement failed: %d\n", sht40_status);
+    ok = false;
+  }
+
+  float bme680_temperature, bme680_humidity;
+  bme680_status_t bme680_status = bme680_read_measurement_forced(
+      bme680, &bme680_temperature, pressure, &bme680_humidity);
+  if (bme680_status != BME680_OK) {
+    printf("BME680 measurement failed: %d\n", bme680_status);
+    ok = false;
+  }
+
+  return ok;
+}
+
+static void take_sample(sht40_t *sht40, bme680_t *bme680, ds3231_t *ds3231) {
   float temperature, pressure, humidity;
   ds3231_datetime_t datetime;
   ds3231_read_datetime(ds3231, &datetime);
-  if (bme680_read_measurement_forced(bme680, &temperature, &pressure,
-                                     &humidity) == BME680_OK) {
+  if (read_environment(sht40, bme680, &temperature, &humidity, &pressure)) {
     printf("Sample taken at %02d:%02d:%02d on %02d-%02d-%04d: Temp=%.2fC, "
            "Pres=%.2fhPa, Hum=%.2f%%\n",
            datetime.hours, datetime.minutes, datetime.seconds, datetime.day,
@@ -128,10 +152,10 @@ int main() {
   gpio_pull_up(I2C_SDA_PIN);
   gpio_pull_up(I2C_SCL_PIN);
 
-  gpio_init(BUTTON_PIN);
-  gpio_set_dir(BUTTON_PIN, GPIO_IN);
-  gpio_pull_up(BUTTON_PIN);
-  gpio_set_irq_enabled_with_callback(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true,
+  gpio_init(BUTTON_PIN_0);
+  gpio_set_dir(BUTTON_PIN_0, GPIO_IN);
+  gpio_pull_up(BUTTON_PIN_0);
+  gpio_set_irq_enabled_with_callback(BUTTON_PIN_0, GPIO_IRQ_EDGE_FALL, true,
                                      &button_isr);
 
   gpio_init(RTC_INT_PIN);
@@ -154,11 +178,30 @@ int main() {
     printf("Chip ID: 0x%02X\n", bme680_chip_id);
   }
 
+  sht40_t *sht40 =
+      sht40_create(I2C_PORT, SHT40_I2C_ADDRESS, sht40_port_i2c_write,
+                   sht40_port_i2c_read, sht40_port_delay_ms);
+  if (sht40 == NULL) {
+    printf("Failed to create SHT40 instance\n");
+    return -1;
+  }
+  sht40_status_t sht40_status = sht40_soft_reset(sht40);
+  if (sht40_status != SHT40_OK) {
+    printf("SHT40 soft reset failed: %d\n", sht40_status);
+  }
+  uint32_t sht40_serial = 0;
+  sht40_status = sht40_read_serial(sht40, &sht40_serial);
+  if (sht40_status != SHT40_OK) {
+    printf("Failed to read SHT40 serial: %d\n", sht40_status);
+  } else {
+    printf("SHT40 serial: 0x%08lX\n", (unsigned long)sht40_serial);
+  }
+
   ssd1351_port_hw_init();
   ssd1351_io_t io = ssd1351_port_get_io();
   ssd1351_t *oled = ssd1351_get_instance();
   ssd1351_init(oled, &io);
-  ssd1351_set_rotation(oled, SSD1351_ROT_90);
+  ssd1351_set_rotation(oled, SSD1351_ROT_0);
   ssd1351_fill(oled, 0x0000);
 
   ds3231_t *ds3231 = ds3231_create(I2C_PORT, DS3231_I2C_ADDRESS,
@@ -189,11 +232,8 @@ int main() {
   while (true) {
     if (mode == MODE_MANUAL) {
       float temperature, pressure, humidity;
-      bme680_status = bme680_read_measurement_forced(bme680, &temperature,
-                                                     &pressure, &humidity);
-      if (bme680_status != BME680_OK) {
-        printf("Failed to read measurement: %d\n", bme680_status);
-      } else {
+      if (read_environment(sht40, bme680, &temperature, &humidity,
+                           &pressure)) {
         printf("Temperature: %.2f°C, Pressure: %.2f hPa, Humidity: %.2f %%\n",
                temperature, pressure / 100, humidity);
         display_sensor_data(oled, temperature, pressure, humidity);
@@ -228,17 +268,17 @@ int main() {
         continue;
       }
       button_event = false;
-      power_dormant_until_pins(RTC_INT_PIN, BUTTON_PIN);
+      power_dormant_until_pins(RTC_INT_PIN, BUTTON_PIN_0);
       bool alarm_triggered = false;
       ds3231_is_alarm1_triggered(ds3231, &alarm_triggered);
       if (alarm_triggered) {
-        take_sample(bme680, ds3231);
+        take_sample(sht40, bme680, ds3231);
         ds3231_datetime_t current_time;
         if (ds3231_read_datetime(ds3231, &current_time) == DS3231_OK) {
           display_backpack_clock(oled, &current_time);
         }
       }
-      if (button_event || gpio_get(BUTTON_PIN) == 0) {
+      if (button_event || gpio_get(BUTTON_PIN_0) == 0) {
         button_event = false;
         ds3231_clear_alarm1_flag(ds3231);
         mode = MODE_MANUAL;
