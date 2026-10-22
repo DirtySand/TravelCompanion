@@ -15,6 +15,12 @@
 #include <stdio.h>
 #include <sys/types.h>
 
+// #define WAKE_DEBUG
+
+#define MANUAL_REFRESH_MS 1000
+#define BUTTON_RELEASE_SETTLE_MS 50
+#define ERROR_ROW_Y 50
+
 int bme680_port_i2c_read(void *ctx, uint8_t dev_addr, uint8_t reg_addr,
                          uint8_t *data, uint8_t length);
 
@@ -45,32 +51,45 @@ static void button_isr(uint gpio, uint32_t events) {
   }
 }
 
+static void wait_for_button_release(void) {
+  while (gpio_get(BUTTON_PIN_0) == 0) {
+    tight_loop_contents();
+  }
+  sleep_ms(BUTTON_RELEASE_SETTLE_MS);
+  button_event = false;
+}
+
+static void show_error(ssd1351_t *oled, const char *message) {
+  printf("%s\n", message);
+  ssd1351_draw_string(oled, 0, ERROR_ROW_Y, message, 0xF800, 0x0000);
+}
+
 static void display_datetime_local(ssd1351_t *oled,
-                                   const ds3231_datetime_t *datetime) {
-  uint16_t full_year = CENTURY_BASE + datetime->year;
+                                   const ds3231_datetime_t *utc) {
+  ds3231_datetime_t local;
   char buffer[32];
   uint16_t fg_color = 0xFFFF;
   uint16_t bg_color = 0x0000;
-  datetime_to_local((ds3231_datetime_t *)datetime, (ds3231_datetime_t *)datetime, CENTURY_BASE);
-  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d:%02d", datetime->hours,
-           datetime->minutes, datetime->seconds);
+  datetime_to_local(utc, &local, CENTURY_BASE);
+  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d:%02d", local.hours,
+           local.minutes, local.seconds);
   ssd1351_draw_string(oled, 0, 30, buffer, fg_color, bg_color);
-  snprintf(buffer, sizeof(buffer), "Date: %02d-%02d-%04d", datetime->day,
-           datetime->month, full_year);
+  snprintf(buffer, sizeof(buffer), "Date: %02d-%02d-%04d", local.day,
+           local.month, CENTURY_BASE + local.year);
   ssd1351_draw_string(oled, 0, 40, buffer, fg_color, bg_color);
 }
 
 static void display_backpack_clock(ssd1351_t *oled,
-                                   const ds3231_datetime_t *datetime) {
+                                   const ds3231_datetime_t *utc) {
+  ds3231_datetime_t local;
   char buffer[32];
-  uint16_t full_year = CENTURY_BASE + datetime->year;
-  datetime_to_local((ds3231_datetime_t *)datetime, (ds3231_datetime_t *)datetime, CENTURY_BASE);
-  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d", datetime->hours, datetime->minutes);
+  datetime_to_local(utc, &local, CENTURY_BASE);
+  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d", local.hours,
+           local.minutes);
   ssd1351_draw_string(oled, 0, 30, buffer, 0x3000, 0x0000);
-  snprintf(buffer, sizeof(buffer), "Date: %02d-%02d-%04d", datetime->day,
-           datetime->month, CENTURY_BASE + datetime->year);
+  snprintf(buffer, sizeof(buffer), "Date: %02d-%02d-%04d", local.day,
+           local.month, CENTURY_BASE + local.year);
   ssd1351_draw_string(oled, 0, 40, buffer, 0x3000, 0x0000);
-
 }
 
 static void display_sensor_data(ssd1351_t *oled, float temperature,
@@ -90,6 +109,15 @@ static void display_sensor_data(ssd1351_t *oled, float temperature,
   ssd1351_draw_string(oled, 0, 20, buffer, fg_color, bg_color);
 }
 
+static void display_backpack_screen(ssd1351_t *oled, ds3231_t *ds3231) {
+  ssd1351_fill(oled, 0x0000);
+  ssd1351_draw_string(oled, 0, 0, "Backpack mode", 0x2000, 0x0000);
+  ds3231_datetime_t current_time;
+  if (ds3231_read_datetime(ds3231, &current_time) == DS3231_OK) {
+    display_backpack_clock(oled, &current_time);
+  }
+}
+
 static ds3231_status_t arm_next_alarm(ds3231_t *dev) {
   ds3231_datetime_t datetime;
   ds3231_status_t status = ds3231_read_datetime(dev, &datetime);
@@ -100,6 +128,11 @@ static ds3231_status_t arm_next_alarm(ds3231_t *dev) {
   return ds3231_set_alarm_1(dev, datetime.hours, datetime.minutes,
                             datetime.seconds, datetime.day,
                             DS3231_ALARM1_MATCH_DATE);
+}
+
+static bool restart_backpack_alarm(ds3231_t *ds3231) {
+  return ds3231_clear_alarm1_flag(ds3231) == DS3231_OK &&
+         arm_next_alarm(ds3231) == DS3231_OK;
 }
 
 static bool read_environment(sht40_t *sht40, bme680_t *bme680,
@@ -141,6 +174,17 @@ static void take_sample(sht40_t *sht40, bme680_t *bme680, ds3231_t *ds3231) {
            datetime.month, CENTURY_BASE + datetime.year);
   }
 }
+
+#ifdef WAKE_DEBUG
+static void display_wake_debug(ssd1351_t *oled, uint32_t wake) {
+  static uint32_t wake_count = 0;
+  char buffer[32];
+  wake_count++;
+  snprintf(buffer, sizeof(buffer), "W%lu R%d B%d", (unsigned long)wake_count,
+           (wake & POWER_WAKE_RTC) != 0, (wake & POWER_WAKE_BUTTON) != 0);
+  ssd1351_draw_string(oled, 0, 60, buffer, 0x3000, 0x0000);
+}
+#endif
 
 int main() {
   set_sys_clock_khz(SYS_CLOCK_KHZ, true);
@@ -240,47 +284,59 @@ int main() {
       }
 
       ds3231_datetime_t datetime;
-      if (ds3231_read_datetime(ds3231, &datetime) != DS3231_OK) {
+      ds3231_status = ds3231_read_datetime(ds3231, &datetime);
+      if (ds3231_status != DS3231_OK) {
         printf("Failed to read datetime: %d\n", ds3231_status);
       } else {
         display_datetime_local(oled, &datetime);
       }
 
       if (button_event) {
-        button_event = false;
+        wait_for_button_release();
         if (time_invalid) {
           ssd1351_draw_string(oled, 0, 0, "RTC time invalid", 0xF800, 0x0000);
-        } else {
+        } else if (restart_backpack_alarm(ds3231)) {
           mode = MODE_BACKPACK;
-          ssd1351_fill(oled, 0x0000);
-          ssd1351_draw_string(oled, 0, 0, "Backpack mode", 0x2000, 0x0000);
-          ds3231_datetime_t current_time;
-          if (ds3231_read_datetime(ds3231, &current_time) == DS3231_OK) {
-            display_backpack_clock(oled, &current_time);
-          }
+          display_backpack_screen(oled, ds3231);
+          continue;
+        } else {
+          show_error(oled, "RTC alarm error");
         }
       }
-      sleep_ms(1000);
+
+      absolute_time_t next_refresh = make_timeout_time_ms(MANUAL_REFRESH_MS);
+      while (!button_event && !best_effort_wfe_or_timeout(next_refresh)) {
+      }
     } else {
-      ds3231_clear_alarm1_flag(ds3231);
-      if (arm_next_alarm(ds3231) != DS3231_OK) {
+      uint32_t wake = power_dormant_until_pins(RTC_INT_PIN, BUTTON_PIN_0);
+#ifdef WAKE_DEBUG
+      display_wake_debug(oled, wake);
+#endif
+
+      bool alarm_triggered = false;
+      if (ds3231_is_alarm1_triggered(ds3231, &alarm_triggered) != DS3231_OK) {
         mode = MODE_MANUAL;
+        ssd1351_fill(oled, 0x0000);
+        show_error(oled, "RTC read error");
         continue;
       }
-      button_event = false;
-      power_dormant_until_pins(RTC_INT_PIN, BUTTON_PIN_0);
-      bool alarm_triggered = false;
-      ds3231_is_alarm1_triggered(ds3231, &alarm_triggered);
+
       if (alarm_triggered) {
         take_sample(sht40, bme680, ds3231);
         ds3231_datetime_t current_time;
         if (ds3231_read_datetime(ds3231, &current_time) == DS3231_OK) {
           display_backpack_clock(oled, &current_time);
         }
+        if (!restart_backpack_alarm(ds3231)) {
+          mode = MODE_MANUAL;
+          ssd1351_fill(oled, 0x0000);
+          show_error(oled, "RTC alarm error");
+          continue;
+        }
       }
-      if (button_event || gpio_get(BUTTON_PIN_0) == 0) {
-        button_event = false;
-        ds3231_clear_alarm1_flag(ds3231);
+
+      if (wake & POWER_WAKE_BUTTON) {
+        wait_for_button_release();
         mode = MODE_MANUAL;
         ssd1351_fill(oled, 0x0000);
       }
