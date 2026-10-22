@@ -40,7 +40,7 @@ static void button_isr(uint gpio, uint32_t events) {
     return;
   }
   last_interrupt_time = current_time;
-  if (gpio == BUTTON_PIN && (events & GPIO_IRQ_EDGE_FALL)) {
+  if (gpio == BUTTON_PIN_0 && (events & GPIO_IRQ_EDGE_FALL)) {
     button_event = true;
   }
 }
@@ -152,10 +152,10 @@ int main() {
   gpio_pull_up(I2C_SDA_PIN);
   gpio_pull_up(I2C_SCL_PIN);
 
-  gpio_init(BUTTON_PIN);
-  gpio_set_dir(BUTTON_PIN, GPIO_IN);
-  gpio_pull_up(BUTTON_PIN);
-  gpio_set_irq_enabled_with_callback(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true,
+  gpio_init(BUTTON_PIN_0);
+  gpio_set_dir(BUTTON_PIN_0, GPIO_IN);
+  gpio_pull_up(BUTTON_PIN_0);
+  gpio_set_irq_enabled_with_callback(BUTTON_PIN_0, GPIO_IRQ_EDGE_FALL, true,
                                      &button_isr);
 
   gpio_init(RTC_INT_PIN);
@@ -268,7 +268,7 @@ int main() {
         continue;
       }
       button_event = false;
-      power_dormant_until_pins(RTC_INT_PIN, BUTTON_PIN);
+      power_dormant_until_pins(RTC_INT_PIN, BUTTON_PIN_0);
       bool alarm_triggered = false;
       ds3231_is_alarm1_triggered(ds3231, &alarm_triggered);
       if (alarm_triggered) {
@@ -278,7 +278,7 @@ int main() {
           display_backpack_clock(oled, &current_time);
         }
       }
-      if (button_event || gpio_get(BUTTON_PIN) == 0) {
+      if (button_event || gpio_get(BUTTON_PIN_0) == 0) {
         button_event = false;
         ds3231_clear_alarm1_flag(ds3231);
         mode = MODE_MANUAL;
