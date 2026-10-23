@@ -11,6 +11,10 @@
 #define I2C_SDA_PIN 2
 #define I2C_SCL_PIN 3
 #define I2C_PORT i2c1
+#define GPS_UART uart0
+#define GPS_UART_TX_PIN 0
+#define GPS_UART_RX_PIN 1
+#define GPS_BAUDRATE 9600
 #define BME680_I2C_ADDRESS 0x77
 #define DS3231_I2C_ADDRESS 0x68
 #define SHT40_I2C_ADDRESS 0x44
