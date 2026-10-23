@@ -1,12 +1,12 @@
 #include "power.h"
+#include "board_config.h"
+#include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/structs/io_bank0.h"
-#include "pico/sleep.h"
-#include "pico/stdlib.h"
-#include "hardware/clocks.h"
-#include "board_config.h"
 #include "hardware/sync.h"
 #include "hardware/xosc.h"
+#include "pico/sleep.h"
+#include "pico/stdlib.h"
 
 static bool dormant_wake_pending(uint8_t pin, uint32_t event) {
   uint32_t mask = event << (4u * (pin % 8u));
@@ -25,8 +25,10 @@ uint32_t power_dormant_until_pins(uint8_t rtc_int_pin, uint8_t button_pin) {
   xosc_dormant();
 
   uint32_t wake = POWER_WAKE_NONE;
-  if (dormant_wake_pending(rtc_int_pin, ev)) wake |= POWER_WAKE_RTC;
-  if (dormant_wake_pending(button_pin, ev))  wake |= POWER_WAKE_BUTTON;
+  if (dormant_wake_pending(rtc_int_pin, ev))
+    wake |= POWER_WAKE_RTC;
+  if (dormant_wake_pending(button_pin, ev))
+    wake |= POWER_WAKE_BUTTON;
 
   gpio_set_dormant_irq_enabled(rtc_int_pin, ev, false);
   gpio_set_dormant_irq_enabled(button_pin, ev, false);
