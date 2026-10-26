@@ -78,40 +78,54 @@ static void format_coordinate(char *buffer, size_t size, const char *label,
            (unsigned long)((magnitude % 10000000u) / 100u));
 }
 
-static const char *gps_fix_text(const ui_gps_t *gps, uint16_t *color) {
-  if (!gps->received) {
+static const char *gps_state_text(ui_gps_state_t state, uint16_t *color) {
+  switch (state) {
+  case UI_GPS_FIX:
+    *color = UI_COLOR_GREEN;
+    return "GPS: FIX";
+  case UI_GPS_LOST:
+    *color = UI_COLOR_YELLOW;
+    return "GPS: SIGNAL LOST";
+  case UI_GPS_SEARCHING:
+    *color = UI_COLOR_YELLOW;
+    return "GPS: SEARCHING";
+  case UI_GPS_TIMEOUT:
+    *color = UI_COLOR_RED;
+    return "GPS: TIMEOUT";
+  case UI_GPS_NO_DATA:
+  default:
     *color = UI_COLOR_RED;
     return "GPS: NO DATA";
   }
-  if (!gps->fresh) {
-    *color = UI_COLOR_RED;
-    return "GPS: TIMEOUT";
-  }
-  if (!gps->data.fix_valid) {
-    *color = UI_COLOR_YELLOW;
-    return "GPS: NO FIX";
-  }
-  *color = UI_COLOR_GREEN;
-  return "GPS: FIX";
 }
 
-void ui_draw_gps_card(ssd1351_t *oled, const ui_gps_t *gps) {
+static bool gps_is_receiving(ui_gps_state_t state) {
+  return state == UI_GPS_SEARCHING || state == UI_GPS_LOST ||
+         state == UI_GPS_FIX;
+}
+
+static void format_age(char *buffer, size_t size, uint32_t seconds) {
+  unsigned long s = (unsigned long)seconds;
+  if (s < 60u) {
+    snprintf(buffer, size, "%lus", s);
+  } else if (s < 3600u) {
+    snprintf(buffer, size, "%lum%02lus", s / 60u, s % 60u);
+  } else if (s < 86400u) {
+    snprintf(buffer, size, "%luh%02lum", s / 3600u, (s % 3600u) / 60u);
+  } else {
+    snprintf(buffer, size, "%lud%02luh", s / 86400u, (s % 86400u) / 3600u);
+  }
+}
+
+static void draw_gps_position(ssd1351_t *oled, const ui_gps_t *gps,
+                              uint16_t color) {
   char buffer[32];
-  const neo6m_data_t *d = &gps->data;
-  uint16_t color;
+  const neo6m_data_t *f = &gps->fix;
 
-  const char *fix = gps_fix_text(gps, &color);
-  ui_draw_line(oled, 0, fix, color);
-
-  color = gps->fresh ? UI_COLOR_WHITE : UI_COLOR_GRAY;
-
-  snprintf(buffer, sizeof(buffer), "Sats: %u", d->satellites);
-  ui_draw_line(oled, 1, buffer, color);
-
-  if (d->position_valid) {
-    format_coordinate(buffer, sizeof(buffer), "Lat:", d->latitude_e7, 'N', 'S');
+  if (gps->has_fix && f->position_valid) {
+    format_coordinate(buffer, sizeof(buffer), "Lat:", f->latitude_e7, 'N', 'S');
     ui_draw_line(oled, 2, buffer, color);
-    format_coordinate(buffer, sizeof(buffer), "Lon:", d->longitude_e7, 'E',
+    format_coordinate(buffer, sizeof(buffer), "Lon:", f->longitude_e7, 'E',
                       'W');
     ui_draw_line(oled, 3, buffer, color);
   } else {
@@ -119,8 +133,8 @@ void ui_draw_gps_card(ssd1351_t *oled, const ui_gps_t *gps) {
     ui_draw_line(oled, 3, "Lon: ---", color);
   }
 
-  if (d->altitude_valid) {
-    int32_t alt = d->altitude_dm;
+  if (gps->has_fix && f->altitude_valid) {
+    int32_t alt = f->altitude_dm;
     uint32_t magnitude = (alt < 0) ? (uint32_t)(-(int64_t)alt) : (uint32_t)alt;
     snprintf(buffer, sizeof(buffer), "Alt: %s%lu.%lu m", (alt < 0) ? "-" : "",
              (unsigned long)(magnitude / 10u),
@@ -130,55 +144,85 @@ void ui_draw_gps_card(ssd1351_t *oled, const ui_gps_t *gps) {
     ui_draw_line(oled, 4, "Alt: ---", color);
   }
 
-  if (d->speed_valid) {
+  if (gps->has_fix && f->speed_valid) {
     snprintf(buffer, sizeof(buffer), "Spd: %lu.%lu km/h",
-             (unsigned long)(d->speed_kmh_x10 / 10u),
-             (unsigned long)(d->speed_kmh_x10 % 10u));
+             (unsigned long)(f->speed_kmh_x10 / 10u),
+             (unsigned long)(f->speed_kmh_x10 % 10u));
     ui_draw_line(oled, 5, buffer, color);
   } else {
     ui_draw_line(oled, 5, "Spd: ---", color);
   }
 
-  if (d->course_valid) {
+  if (gps->has_fix && f->course_valid) {
     snprintf(buffer, sizeof(buffer),
              "Crs: %u.%u"
              "\x7f",
-             d->course_x100 / 100u, (d->course_x100 % 100u) / 10u);
+             f->course_x100 / 100u, (f->course_x100 % 100u) / 10u);
     ui_draw_line(oled, 6, buffer, color);
   } else {
     ui_draw_line(oled, 6, "Crs: ---", color);
   }
 
-  if (d->hdop_valid) {
-    snprintf(buffer, sizeof(buffer), "HDOP: %u.%02u", d->hdop_x100 / 100u,
-             d->hdop_x100 % 100u);
+  if (gps->has_fix && f->hdop_valid) {
+    snprintf(buffer, sizeof(buffer), "HDOP: %u.%02u", f->hdop_x100 / 100u,
+             f->hdop_x100 % 100u);
     ui_draw_line(oled, 7, buffer, color);
   } else {
     ui_draw_line(oled, 7, "HDOP: ---", color);
   }
+}
 
-  if (d->time_valid) {
-    snprintf(buffer, sizeof(buffer), "UTC:  %02u:%02u:%02u", d->hours,
-             d->minutes, d->seconds);
-    ui_draw_line(oled, 8, buffer, color);
+void ui_draw_gps_card(ssd1351_t *oled, const ui_gps_t *gps) {
+  char buffer[32];
+  const neo6m_data_t *live = &gps->live;
+  uint16_t color;
+
+  const char *state = gps_state_text(gps->state, &color);
+  ui_draw_line(oled, 0, state, color);
+
+  uint16_t live_color =
+      gps_is_receiving(gps->state) ? UI_COLOR_WHITE : UI_COLOR_GRAY;
+  uint16_t fix_color =
+      (gps->state == UI_GPS_FIX) ? UI_COLOR_WHITE : UI_COLOR_GRAY;
+
+  snprintf(buffer, sizeof(buffer), "Sats: %u", live->satellites);
+  ui_draw_line(oled, 1, buffer, live_color);
+
+  draw_gps_position(oled, gps, fix_color);
+
+  if (live->time_valid) {
+    snprintf(buffer, sizeof(buffer), "UTC:  %02u:%02u:%02u", live->hours,
+             live->minutes, live->seconds);
+    ui_draw_line(oled, 8, buffer, live_color);
   } else {
-    ui_draw_line(oled, 8, "UTC:  --:--:--", color);
+    ui_draw_line(oled, 8, "UTC:  --:--:--", live_color);
   }
 
-  if (d->date_valid) {
-    snprintf(buffer, sizeof(buffer), "Date: %02u-%02u-%04u", d->day, d->month,
-             CENTURY_BASE + d->year);
-    ui_draw_line(oled, 9, buffer, color);
+  if (live->date_valid) {
+    snprintf(buffer, sizeof(buffer), "Date: %02u-%02u-%04u", live->day,
+             live->month, CENTURY_BASE + live->year);
+    ui_draw_line(oled, 9, buffer, live_color);
   } else {
-    ui_draw_line(oled, 9, "Date: --", color);
+    ui_draw_line(oled, 9, "Date: --", live_color);
   }
 
-  unsigned long errors =
-      (unsigned long)(gps->stats.checksum_errors + gps->stats.overflows +
-                      gps->dropped_bytes);
-  snprintf(buffer, sizeof(buffer), "Rx %lu Err %lu",
-           (unsigned long)gps->stats.sentences, errors);
-  ui_draw_line(oled, 10, buffer, UI_COLOR_GRAY);
+  if (gps->has_fix && gps->state != UI_GPS_FIX) {
+    char age[16];
+    if (gps->fix_age_valid) {
+      format_age(age, sizeof(age), gps->fix_age_s);
+    } else {
+      snprintf(age, sizeof(age), "?");
+    }
+    snprintf(buffer, sizeof(buffer), "Fix age: %s", age);
+    ui_draw_line(oled, 10, buffer, UI_COLOR_GRAY);
+  } else {
+    unsigned long errors =
+        (unsigned long)(gps->stats.checksum_errors + gps->stats.overflows +
+                        gps->dropped_bytes);
+    snprintf(buffer, sizeof(buffer), "Rx %lu Err %lu",
+             (unsigned long)gps->stats.sentences, errors);
+    ui_draw_line(oled, 10, buffer, UI_COLOR_GRAY);
+  }
 }
 
 void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
