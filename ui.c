@@ -6,18 +6,24 @@
 
 void ui_clear(ssd1351_t *oled) { ssd1351_fill(oled, UI_COLOR_BLACK); }
 
-void ui_draw_line(ssd1351_t *oled, uint8_t row, const char *text,
-                  uint16_t color) {
+static void draw_padded(ssd1351_t *oled, uint8_t column, uint8_t row,
+                        const char *text, uint8_t width, uint16_t color) {
   char line[UI_COLUMNS + 1];
   size_t length = strlen(text);
-  if (length > UI_COLUMNS) {
-    length = UI_COLUMNS;
+  if (length > width) {
+    length = width;
   }
   memcpy(line, text, length);
-  memset(line + length, ' ', UI_COLUMNS - length);
-  line[UI_COLUMNS] = '\0';
-  ssd1351_draw_string(oled, 0, (uint8_t)(row * UI_ROW_HEIGHT), line, color,
+  memset(line + length, ' ', width - length);
+  line[width] = '\0';
+  ssd1351_draw_string(oled, (uint8_t)(column * UI_CHAR_WIDTH),
+                      (uint8_t)(row * UI_ROW_HEIGHT), line, color,
                       UI_COLOR_BLACK);
+}
+
+void ui_draw_line(ssd1351_t *oled, uint8_t row, const char *text,
+                  uint16_t color) {
+  draw_padded(oled, 0, row, text, UI_COLUMNS, color);
 }
 
 void ui_draw_status(ssd1351_t *oled, const char *text, uint16_t color) {
@@ -25,10 +31,19 @@ void ui_draw_status(ssd1351_t *oled, const char *text, uint16_t color) {
 }
 
 void ui_draw_footer(ssd1351_t *oled, const char *title, uint8_t index,
-                    uint8_t count) {
+                    uint8_t count, const char *tag, uint16_t tag_color) {
   char buffer[32];
+  size_t tag_length = strlen(tag);
+  if (tag_length > UI_COLUMNS) {
+    tag_length = UI_COLUMNS;
+  }
+  uint8_t title_width = (uint8_t)(UI_COLUMNS - tag_length);
   snprintf(buffer, sizeof(buffer), "%u/%u %s", index, count, title);
-  ui_draw_line(oled, UI_FOOTER_ROW, buffer, UI_COLOR_GRAY);
+  draw_padded(oled, 0, UI_FOOTER_ROW, buffer, title_width, UI_COLOR_GRAY);
+  if (tag_length > 0) {
+    draw_padded(oled, title_width, UI_FOOTER_ROW, tag, (uint8_t)tag_length,
+                tag_color);
+  }
 }
 
 void ui_draw_environment_card(ssd1351_t *oled, const ui_environment_t *env,
@@ -80,6 +95,12 @@ static void format_coordinate(char *buffer, size_t size, const char *label,
 
 static const char *gps_state_text(ui_gps_state_t state, uint16_t *color) {
   switch (state) {
+  case UI_GPS_OFF:
+    *color = UI_COLOR_GRAY;
+    return "GPS: OFF";
+  case UI_GPS_STARTING:
+    *color = UI_COLOR_YELLOW;
+    return "GPS: STARTING";
   case UI_GPS_FIX:
     *color = UI_COLOR_GREEN;
     return "GPS: FIX";

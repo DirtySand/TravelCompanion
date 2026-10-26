@@ -39,9 +39,22 @@
 #define NEO6M_MAX_CNO 99
 #define NEO6M_TOP_CNO 4
 
+#define UBX_SYNC_1 0xB5
+#define UBX_SYNC_2 0x62
+#define UBX_HEADER_LENGTH 6
+#define UBX_CHECKSUM_LENGTH 2
+#define UBX_MAX_PAYLOAD 8
+#define UBX_CLASS_RXM 0x02
+#define UBX_ID_RXM_PMREQ 0x41
+#define UBX_PMREQ_DURATION_INFINITE 0u
+#define UBX_PMREQ_FLAG_BACKUP 0x02u
+#define NEO6M_WAKE_BYTES 8
+#define NEO6M_WAKE_PATTERN 0xFF
+
 struct neo6m {
   void *ctx;
   neo6m_uart_read_fn uart_read;
+  neo6m_uart_write_fn uart_write;
   char sentence[NEO6M_SENTENCE_MAX_CHARS + 1];
   uint8_t length;
   bool receiving;
@@ -54,8 +67,9 @@ struct neo6m {
 static neo6m_t instance;
 static int instance_used = 0;
 
-neo6m_t *neo6m_create(void *ctx, neo6m_uart_read_fn uart_read) {
-  if (uart_read == NULL) {
+neo6m_t *neo6m_create(void *ctx, neo6m_uart_read_fn uart_read,
+                      neo6m_uart_write_fn uart_write) {
+  if (uart_read == NULL || uart_write == NULL) {
     return NULL;
   }
   if (instance_used) {
@@ -64,6 +78,7 @@ neo6m_t *neo6m_create(void *ctx, neo6m_uart_read_fn uart_read) {
   memset(&instance, 0, sizeof(instance));
   instance.ctx = ctx;
   instance.uart_read = uart_read;
+  instance.uart_write = uart_write;
   instance_used = 1;
   return &instance;
 }
@@ -436,4 +451,64 @@ neo6m_status_t neo6m_get_stats(const neo6m_t *dev, neo6m_stats_t *stats) {
   }
   *stats = dev->stats;
   return NEO6M_OK;
+}
+
+static neo6m_status_t uart_write_all(neo6m_t *dev, const uint8_t *data,
+                                     size_t length) {
+  int written = dev->uart_write(dev->ctx, data, length);
+  return (written == (int)length) ? NEO6M_OK : NEO6M_UART_ERROR;
+}
+
+static void put_u32_le(uint8_t *out, uint32_t value) {
+  out[0] = (uint8_t)value;
+  out[1] = (uint8_t)(value >> 8);
+  out[2] = (uint8_t)(value >> 16);
+  out[3] = (uint8_t)(value >> 24);
+}
+
+static neo6m_status_t ubx_send(neo6m_t *dev, uint8_t message_class,
+                               uint8_t message_id, const uint8_t *payload,
+                               uint16_t length) {
+  uint8_t frame[UBX_HEADER_LENGTH + UBX_MAX_PAYLOAD + UBX_CHECKSUM_LENGTH];
+  if (length > UBX_MAX_PAYLOAD) {
+    return NEO6M_UART_ERROR;
+  }
+  frame[0] = UBX_SYNC_1;
+  frame[1] = UBX_SYNC_2;
+  frame[2] = message_class;
+  frame[3] = message_id;
+  frame[4] = (uint8_t)length;
+  frame[5] = (uint8_t)(length >> 8);
+  memcpy(&frame[UBX_HEADER_LENGTH], payload, length);
+
+  size_t end = UBX_HEADER_LENGTH + (size_t)length;
+  uint8_t ck_a = 0;
+  uint8_t ck_b = 0;
+  for (size_t i = 2; i < end; i++) {
+    ck_a = (uint8_t)(ck_a + frame[i]);
+    ck_b = (uint8_t)(ck_b + ck_a);
+  }
+  frame[end] = ck_a;
+  frame[end + 1] = ck_b;
+  return uart_write_all(dev, frame, end + UBX_CHECKSUM_LENGTH);
+}
+
+neo6m_status_t neo6m_power_off(neo6m_t *dev) {
+  if (dev == NULL) {
+    return NEO6M_NULL_PTR;
+  }
+  uint8_t payload[8];
+  put_u32_le(&payload[0], UBX_PMREQ_DURATION_INFINITE);
+  put_u32_le(&payload[4], UBX_PMREQ_FLAG_BACKUP);
+  return ubx_send(dev, UBX_CLASS_RXM, UBX_ID_RXM_PMREQ, payload,
+                  sizeof(payload));
+}
+
+neo6m_status_t neo6m_power_on(neo6m_t *dev) {
+  if (dev == NULL) {
+    return NEO6M_NULL_PTR;
+  }
+  uint8_t wake[NEO6M_WAKE_BYTES];
+  memset(wake, NEO6M_WAKE_PATTERN, sizeof(wake));
+  return uart_write_all(dev, wake, sizeof(wake));
 }

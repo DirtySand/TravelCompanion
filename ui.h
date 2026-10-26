@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #define UI_COLUMNS 16
+#define UI_CHAR_WIDTH 8
 #define UI_ROW_HEIGHT 10
 #define UI_STATUS_ROW 11
 #define UI_FOOTER_ROW 12
@@ -27,6 +28,8 @@ typedef struct {
 } ui_environment_t;
 
 typedef enum {
+  UI_GPS_OFF,
+  UI_GPS_STARTING,
   UI_GPS_NO_DATA,
   UI_GPS_TIMEOUT,
   UI_GPS_SEARCHING,
@@ -50,7 +53,7 @@ void ui_draw_line(ssd1351_t *oled, uint8_t row, const char *text,
                   uint16_t color);
 void ui_draw_status(ssd1351_t *oled, const char *text, uint16_t color);
 void ui_draw_footer(ssd1351_t *oled, const char *title, uint8_t index,
-                    uint8_t count);
+                    uint8_t count, const char *tag, uint16_t tag_color);
 void ui_draw_environment_card(ssd1351_t *oled, const ui_environment_t *env,
                               const ds3231_datetime_t *utc,
                               bool rtc_time_valid);

@@ -51,10 +51,15 @@ typedef struct {
 } neo6m_stats_t;
 
 typedef int (*neo6m_uart_read_fn)(void *ctx, uint8_t *data, size_t max_length);
+typedef int (*neo6m_uart_write_fn)(void *ctx, const uint8_t *data,
+                                   size_t length);
 
-neo6m_t *neo6m_create(void *ctx, neo6m_uart_read_fn uart_read);
+neo6m_t *neo6m_create(void *ctx, neo6m_uart_read_fn uart_read,
+                      neo6m_uart_write_fn uart_write);
 neo6m_status_t neo6m_process(neo6m_t *dev, uint32_t *updated);
 neo6m_status_t neo6m_get_data(const neo6m_t *dev, neo6m_data_t *data);
 neo6m_status_t neo6m_get_stats(const neo6m_t *dev, neo6m_stats_t *stats);
+neo6m_status_t neo6m_power_off(neo6m_t *dev);
+neo6m_status_t neo6m_power_on(neo6m_t *dev);
 
 #endif // NEO6M_H

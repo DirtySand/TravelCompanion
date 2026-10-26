@@ -26,6 +26,8 @@
 #define GPS_STALE_MS 3000
 #define STATUS_MESSAGE_MS 4000
 #define GPS_SYNC_TIMEOUT_MS 2500
+#define GPS_OFF_GRACE_MS 2000
+#define GPS_START_TIMEOUT_MS 5000
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
 #define BUTTON_NEXT_CARD BUTTON_BOTTOM_RIGHT
@@ -78,6 +80,8 @@ typedef struct {
   bool time_invalid;
   bool clear_screen;
   bool refresh_now;
+  bool gps_enabled;
+  absolute_time_t gps_toggled_at;
   bool gps_received;
   absolute_time_t gps_last_rmc;
   bool gps_has_fix;
@@ -220,6 +224,10 @@ static bool gps_utc_seconds(const neo6m_data_t *data, uint32_t *seconds) {
 }
 
 static void request_time_sync(app_t *app) {
+  if (!app->gps_enabled) {
+    set_status(app, "Sync: GPS off", UI_COLOR_YELLOW);
+    return;
+  }
   neo6m_data_t data;
   neo6m_get_data(app->gps, &data);
   if (!gps_is_fresh(app) || !data.fix_valid) {
@@ -263,6 +271,25 @@ static void check_time_sync_timeout(app_t *app) {
   }
 }
 
+static void gps_set_enabled(app_t *app, bool enabled) {
+  neo6m_status_t status =
+      enabled ? neo6m_power_on(app->gps) : neo6m_power_off(app->gps);
+  if (status != NEO6M_OK) {
+    show_error(app, "GPS UART error");
+    return;
+  }
+  app->gps_enabled = enabled;
+  app->gps_received = false;
+  app->gps_toggled_at = get_absolute_time();
+  app->sync_pending = false;
+  printf("GPS %s\n", enabled ? "on" : "off");
+  set_status(app, enabled ? "GPS on" : "GPS off", UI_COLOR_GRAY);
+}
+
+static int64_t ms_since(absolute_time_t since) {
+  return absolute_time_diff_us(since, get_absolute_time()) / 1000;
+}
+
 static void gps_store_fix(app_t *app) {
   neo6m_data_t data;
   neo6m_get_data(app->gps, &data);
@@ -278,6 +305,15 @@ static void gps_service(app_t *app) {
   uint32_t updated = NEO6M_UPDATED_NONE;
   if (neo6m_process(app->gps, &updated) != NEO6M_OK) {
     return;
+  }
+  if (!app->gps_enabled) {
+    if (!(updated & NEO6M_UPDATED_RMC) ||
+        ms_since(app->gps_toggled_at) < GPS_OFF_GRACE_MS) {
+      return;
+    }
+    app->gps_enabled = true;
+    app->gps_toggled_at = get_absolute_time();
+    show_error(app, "GPS off failed");
   }
   if (updated != NEO6M_UPDATED_NONE) {
     gps_store_fix(app);
@@ -311,8 +347,13 @@ static void draw_environment_card(app_t *app) {
 }
 
 static ui_gps_state_t gps_state(const app_t *app, const neo6m_data_t *live) {
+  if (!app->gps_enabled) {
+    return UI_GPS_OFF;
+  }
   if (!app->gps_received) {
-    return UI_GPS_NO_DATA;
+    return (ms_since(app->gps_toggled_at) < GPS_START_TIMEOUT_MS)
+               ? UI_GPS_STARTING
+               : UI_GPS_NO_DATA;
   }
   if (!gps_is_fresh(app)) {
     return UI_GPS_TIMEOUT;
@@ -357,6 +398,9 @@ static const char *card_hint(const app_t *app, uint16_t *color) {
   *color = UI_COLOR_GRAY;
   switch (app->card) {
   case CARD_GPS:
+    if (!app->gps_enabled) {
+      return "Hold BACK: on";
+    }
     if (app->sync_pending) {
       *color = UI_COLOR_YELLOW;
       return "Syncing time...";
@@ -367,6 +411,29 @@ static const char *card_hint(const app_t *app, uint16_t *color) {
   default:
     return "";
   }
+}
+
+static const char *gps_footer_tag(const app_t *app, uint16_t *color) {
+  *color = UI_COLOR_GRAY;
+  if (app->card == CARD_GPS || !app->gps_enabled) {
+    return "";
+  }
+  neo6m_data_t live;
+  neo6m_get_data(app->gps, &live);
+  switch (gps_state(app, &live)) {
+  case UI_GPS_FIX:
+    *color = UI_COLOR_GREEN;
+    break;
+  case UI_GPS_STARTING:
+  case UI_GPS_SEARCHING:
+  case UI_GPS_LOST:
+    *color = UI_COLOR_YELLOW;
+    break;
+  default:
+    *color = UI_COLOR_RED;
+    break;
+  }
+  return "GPS";
 }
 
 static void draw_current_card(app_t *app) {
@@ -395,8 +462,10 @@ static void draw_current_card(app_t *app) {
     const char *hint = card_hint(app, &color);
     ui_draw_status(app->oled, hint, color);
   }
+  uint16_t tag_color;
+  const char *tag = gps_footer_tag(app, &tag_color);
   ui_draw_footer(app->oled, card_titles[app->card], (uint8_t)(app->card + 1),
-                 CARD_COUNT);
+                 CARD_COUNT, tag, tag_color);
 }
 
 static void enter_backpack_mode(app_t *app) {
@@ -442,6 +511,9 @@ static void handle_ok(app_t *app) {
 }
 
 static void handle_manual_buttons(app_t *app, uint32_t pressed) {
+  if (pressed & BUTTON_LONG_MASK(BUTTON_BACK)) {
+    gps_set_enabled(app, !app->gps_enabled);
+  }
   if (pressed & BUTTON_MASK(BUTTON_BACK)) {
     handle_back(app);
   }
@@ -505,7 +577,7 @@ int main() {
   gpio_pull_up(I2C_SDA_PIN);
   gpio_pull_up(I2C_SCL_PIN);
 
-  buttons_init();
+  buttons_init(BUTTON_MASK(BUTTON_BACK));
 
   gpio_init(RTC_INT_PIN);
   gpio_set_dir(RTC_INT_PIN, GPIO_IN);
@@ -554,10 +626,14 @@ int main() {
   ssd1351_fill(oled, 0x0000);
 
   neo6m_port_hw_init();
-  neo6m_t *gps = neo6m_create(NULL, neo6m_port_uart_read);
+  neo6m_t *gps =
+      neo6m_create(NULL, neo6m_port_uart_read, neo6m_port_uart_write);
   if (gps == NULL) {
     printf("Failed to create NEO-6M instance\n");
     return -1;
+  }
+  if (neo6m_power_on(gps) != NEO6M_OK) {
+    printf("Failed to wake NEO-6M\n");
   }
 
   ds3231_t *ds3231 = ds3231_create(I2C_PORT, DS3231_I2C_ADDRESS,
@@ -592,6 +668,8 @@ int main() {
   app.card = CARD_ENVIRONMENT;
   app.time_invalid = time_invalid;
   app.clear_screen = true;
+  app.gps_enabled = true;
+  app.gps_toggled_at = get_absolute_time();
 
   absolute_time_t next_refresh = get_absolute_time();
   while (true) {

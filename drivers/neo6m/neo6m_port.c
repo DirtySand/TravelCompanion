@@ -7,9 +7,11 @@
 #define GPS_RX_BUFFER_SIZE 1024u
 #define GPS_RX_BUFFER_MASK (GPS_RX_BUFFER_SIZE - 1u)
 
-#define GPS_UART_ERROR_BITS (UART_UARTDR_OE_BITS | UART_UARTDR_BE_BITS | UART_UARTDR_PE_BITS | UART_UARTDR_FE_BITS)
+#define GPS_UART_ERROR_BITS                                                    \
+  (UART_UARTDR_OE_BITS | UART_UARTDR_BE_BITS | UART_UARTDR_PE_BITS |           \
+   UART_UARTDR_FE_BITS)
 
-    static volatile uint8_t rx_buffer[GPS_RX_BUFFER_SIZE];
+static volatile uint8_t rx_buffer[GPS_RX_BUFFER_SIZE];
 static volatile uint16_t rx_head;
 static volatile uint16_t rx_tail;
 static volatile uint32_t dropped_bytes;
@@ -56,6 +58,12 @@ int neo6m_port_uart_read(void *ctx, uint8_t *data, size_t max_length) {
     rx_tail = (uint16_t)((rx_tail + 1u) & GPS_RX_BUFFER_MASK);
   }
   return (int)count;
+}
+
+int neo6m_port_uart_write(void *ctx, const uint8_t *data, size_t length) {
+  (void)ctx;
+  uart_write_blocking(GPS_UART, data, length);
+  return (int)length;
 }
 
 uint32_t neo6m_port_dropped_bytes(void) { return dropped_bytes; }
