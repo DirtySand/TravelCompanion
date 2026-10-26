@@ -18,6 +18,7 @@ typedef enum {
   NEO6M_UPDATED_RMC = 1u << 0,
   NEO6M_UPDATED_GGA = 1u << 1,
   NEO6M_UPDATED_GSV = 1u << 2,
+  NEO6M_UPDATED_TIME_INFO = 1u << 3,
 } neo6m_update_t;
 
 typedef struct {
@@ -42,6 +43,10 @@ typedef struct {
   bool sky_valid;
   uint8_t satellites_in_view;
   uint8_t cno_top4_avg;
+  bool time_info_valid;
+  bool leap_valid;
+  bool leap_default;
+  uint8_t leap_seconds;
 } neo6m_data_t;
 
 typedef struct {
@@ -61,5 +66,6 @@ neo6m_status_t neo6m_get_data(const neo6m_t *dev, neo6m_data_t *data);
 neo6m_status_t neo6m_get_stats(const neo6m_t *dev, neo6m_stats_t *stats);
 neo6m_status_t neo6m_power_off(neo6m_t *dev);
 neo6m_status_t neo6m_power_on(neo6m_t *dev);
+neo6m_status_t neo6m_poll_time_info(neo6m_t *dev);
 
 #endif // NEO6M_H

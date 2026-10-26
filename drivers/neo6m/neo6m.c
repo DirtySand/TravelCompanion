@@ -36,6 +36,8 @@
 #define GSV_IN_VIEW 3
 #define GSV_FIRST_CNO 7
 #define GSV_BLOCK_FIELDS 4
+#define PUBX_MESSAGE_ID 1
+#define PUBX04_LEAP_SECONDS 6
 #define NEO6M_MAX_CNO 99
 #define NEO6M_TOP_CNO 4
 
@@ -375,6 +377,25 @@ static bool handle_gsv(neo6m_t *dev, char *fields[], uint8_t count) {
   return true;
 }
 
+static bool handle_pubx_time(neo6m_t *dev, char *fields[], uint8_t count) {
+  if (count <= PUBX04_LEAP_SECONDS) {
+    return false;
+  }
+  char *leap = fields[PUBX04_LEAP_SECONDS];
+  size_t length = strlen(leap);
+  bool is_default = length > 0 && leap[length - 1] == 'D';
+  if (is_default) {
+    leap[length - 1] = '\0';
+  }
+  uint32_t value;
+  neo6m_data_t *d = &dev->data;
+  d->leap_valid = parse_fixed(leap, 0, &value) && value <= UINT8_MAX;
+  d->leap_default = d->leap_valid && is_default;
+  d->leap_seconds = d->leap_valid ? (uint8_t)value : 0;
+  d->time_info_valid = true;
+  return true;
+}
+
 static uint32_t handle_sentence(neo6m_t *dev) {
   if (!verify_and_strip_checksum(dev->sentence)) {
     dev->stats.checksum_errors++;
@@ -395,6 +416,11 @@ static uint32_t handle_sentence(neo6m_t *dev) {
   if (sentence_is(fields[0], "GSV")) {
     return handle_gsv(dev, fields, count) ? NEO6M_UPDATED_GSV
                                           : NEO6M_UPDATED_NONE;
+  }
+  if (strcmp(fields[0], "PUBX") == 0 && count > PUBX_MESSAGE_ID &&
+      strcmp(fields[PUBX_MESSAGE_ID], "04") == 0) {
+    return handle_pubx_time(dev, fields, count) ? NEO6M_UPDATED_TIME_INFO
+                                                : NEO6M_UPDATED_NONE;
   }
   return NEO6M_UPDATED_NONE;
 }
@@ -511,4 +537,13 @@ neo6m_status_t neo6m_power_on(neo6m_t *dev) {
   uint8_t wake[NEO6M_WAKE_BYTES];
   memset(wake, NEO6M_WAKE_PATTERN, sizeof(wake));
   return uart_write_all(dev, wake, sizeof(wake));
+}
+
+neo6m_status_t neo6m_poll_time_info(neo6m_t *dev) {
+  if (dev == NULL) {
+    return NEO6M_NULL_PTR;
+  }
+  static const char poll[] = "$PUBX,04*37\r\n";
+  dev->data.time_info_valid = false;
+  return uart_write_all(dev, (const uint8_t *)poll, sizeof(poll) - 1);
 }

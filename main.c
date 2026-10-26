@@ -28,6 +28,8 @@
 #define GPS_SYNC_TIMEOUT_MS 2500
 #define GPS_OFF_GRACE_MS 2000
 #define GPS_START_TIMEOUT_MS 5000
+#define TIME_INFO_POLL_MS 30000
+#define GPS_AUTO_SYNC_DEFAULT false
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
 #define BUTTON_NEXT_CARD BUTTON_BOTTOM_RIGHT
@@ -90,6 +92,9 @@ typedef struct {
   uint32_t gps_fix_utc_s;
   bool sync_pending;
   absolute_time_t sync_deadline;
+  bool auto_sync;
+  bool auto_sync_done;
+  absolute_time_t time_info_poll_at;
   status_message_t status;
 } app_t;
 
@@ -223,20 +228,31 @@ static bool gps_utc_seconds(const neo6m_data_t *data, uint32_t *seconds) {
   return true;
 }
 
-static void request_time_sync(app_t *app) {
-  if (!app->gps_enabled) {
-    set_status(app, "Sync: GPS off", UI_COLOR_YELLOW);
-    return;
-  }
-  neo6m_data_t data;
-  neo6m_get_data(app->gps, &data);
-  if (!gps_is_fresh(app) || !data.fix_valid) {
-    set_status(app, "Sync: no GPS fix", UI_COLOR_YELLOW);
-    return;
-  }
+static void start_time_sync(app_t *app) {
   app->sync_pending = true;
   app->sync_deadline = make_timeout_time_ms(GPS_SYNC_TIMEOUT_MS);
   app->refresh_now = true;
+}
+
+static bool gps_leap_seconds_trusted(const neo6m_data_t *data) {
+  return data->time_info_valid && !(data->leap_valid && data->leap_default);
+}
+
+static void arm_auto_sync(app_t *app) {
+  app->auto_sync_done = false;
+  app->time_info_poll_at = get_absolute_time();
+}
+
+static void toggle_auto_sync(app_t *app) {
+  app->auto_sync = !app->auto_sync;
+  if (app->auto_sync) {
+    arm_auto_sync(app);
+  } else if (!app->time_invalid) {
+    app->sync_pending = false;
+  }
+  printf("Auto sync %s\n", app->auto_sync ? "on" : "off");
+  set_status(app, app->auto_sync ? "Auto sync ON" : "Auto sync OFF",
+             UI_COLOR_GRAY);
 }
 
 static void finish_time_sync(app_t *app) {
@@ -246,6 +262,9 @@ static void finish_time_sync(app_t *app) {
   case TIME_SYNC_OK:
     app->sync_pending = false;
     app->time_invalid = false;
+    if (gps_leap_seconds_trusted(&data)) {
+      app->auto_sync_done = true;
+    }
     printf("RTC synced from GPS: %02u:%02u:%02u %02u-%02u-%04u UTC\n",
            data.hours, data.minutes, data.seconds, data.day, data.month,
            CENTURY_BASE + data.year);
@@ -255,10 +274,10 @@ static void finish_time_sync(app_t *app) {
     break;
   case TIME_SYNC_NO_FIX:
     app->sync_pending = false;
-    set_status(app, "Sync: no GPS fix", UI_COLOR_YELLOW);
     break;
   default:
     app->sync_pending = false;
+    app->auto_sync_done = true;
     show_error(app, "RTC write error");
     break;
   }
@@ -267,8 +286,50 @@ static void finish_time_sync(app_t *app) {
 static void check_time_sync_timeout(app_t *app) {
   if (app->sync_pending && time_reached(app->sync_deadline)) {
     app->sync_pending = false;
-    set_status(app, "Sync timeout", UI_COLOR_RED);
   }
+}
+
+static bool auto_sync_wanted(const app_t *app) {
+  return app->time_invalid || (app->auto_sync && !app->auto_sync_done);
+}
+
+static void auto_sync_check(app_t *app) {
+  neo6m_data_t data;
+  neo6m_get_data(app->gps, &data);
+  if (app->sync_pending || !auto_sync_wanted(app) || !data.fix_valid ||
+      !data.time_valid || !data.date_valid) {
+    return;
+  }
+  if (app->time_invalid) {
+    start_time_sync(app);
+    return;
+  }
+  if (time_reached(app->time_info_poll_at)) {
+    neo6m_poll_time_info(app->gps);
+    app->time_info_poll_at = make_timeout_time_ms(TIME_INFO_POLL_MS);
+    return;
+  }
+  if (gps_leap_seconds_trusted(&data)) {
+    start_time_sync(app);
+  }
+}
+
+static const char *auto_sync_hint(const app_t *app, uint16_t *color) {
+  if (!app->auto_sync) {
+    return "Auto sync: off";
+  }
+  if (app->auto_sync_done) {
+    *color = UI_COLOR_GREEN;
+    return "Auto sync: done";
+  }
+  *color = UI_COLOR_YELLOW;
+  neo6m_data_t live;
+  neo6m_get_data(app->gps, &live);
+  if (gps_is_fresh(app) && live.fix_valid && live.time_info_valid &&
+      live.leap_valid && live.leap_default) {
+    return "Auto sync: wait";
+  }
+  return "Auto sync: on";
 }
 
 static void gps_set_enabled(app_t *app, bool enabled) {
@@ -282,6 +343,9 @@ static void gps_set_enabled(app_t *app, bool enabled) {
   app->gps_received = false;
   app->gps_toggled_at = get_absolute_time();
   app->sync_pending = false;
+  if (enabled) {
+    arm_auto_sync(app);
+  }
   printf("GPS %s\n", enabled ? "on" : "off");
   set_status(app, enabled ? "GPS on" : "GPS off", UI_COLOR_GRAY);
 }
@@ -323,6 +387,8 @@ static void gps_service(app_t *app) {
     app->gps_last_rmc = get_absolute_time();
     if (app->sync_pending) {
       finish_time_sync(app);
+    } else {
+      auto_sync_check(app);
     }
   }
 }
@@ -405,7 +471,7 @@ static const char *card_hint(const app_t *app, uint16_t *color) {
       *color = UI_COLOR_YELLOW;
       return "Syncing time...";
     }
-    return "OK: sync time";
+    return auto_sync_hint(app, color);
   case CARD_BACKPACK:
     return app->time_invalid ? "" : "OK: start";
   default:
@@ -487,10 +553,7 @@ static void leave_backpack_mode(app_t *app) {
 }
 
 static void handle_back(app_t *app) {
-  if (app->sync_pending) {
-    app->sync_pending = false;
-    set_status(app, "Sync cancelled", UI_COLOR_YELLOW);
-  } else if (app->card != CARD_ENVIRONMENT) {
+  if (app->card != CARD_ENVIRONMENT) {
     app->card = CARD_ENVIRONMENT;
     app->clear_screen = true;
   }
@@ -499,7 +562,7 @@ static void handle_back(app_t *app) {
 static void handle_ok(app_t *app) {
   switch (app->card) {
   case CARD_GPS:
-    request_time_sync(app);
+    toggle_auto_sync(app);
     break;
   case CARD_BACKPACK:
     buttons_wait_release(BUTTON_OK);
@@ -670,6 +733,7 @@ int main() {
   app.clear_screen = true;
   app.gps_enabled = true;
   app.gps_toggled_at = get_absolute_time();
+  app.auto_sync = GPS_AUTO_SYNC_DEFAULT;
 
   absolute_time_t next_refresh = get_absolute_time();
   while (true) {
