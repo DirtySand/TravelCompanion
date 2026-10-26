@@ -13,8 +13,9 @@ typedef enum {
 } button_id_t;
 
 #define BUTTON_MASK(id) (1u << (id))
+#define BUTTON_LONG_MASK(id) (1u << ((id) + BUTTON_COUNT))
 
-void buttons_init(void);
+void buttons_init(uint32_t long_press_mask);
 uint32_t buttons_take_events(void);
 bool buttons_has_events(void);
 void buttons_wait_release(button_id_t id);
