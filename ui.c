@@ -185,7 +185,15 @@ void ui_draw_gps_card(ssd1351_t *oled, const ui_gps_t *gps) {
   uint16_t fix_color =
       (gps->state == UI_GPS_FIX) ? UI_COLOR_WHITE : UI_COLOR_GRAY;
 
-  snprintf(buffer, sizeof(buffer), "Sats: %u", live->satellites);
+  if (!live->sky_valid) {
+    snprintf(buffer, sizeof(buffer), "Sats: %u", live->satellites);
+  } else if (live->cno_top4_avg == 0) {
+    snprintf(buffer, sizeof(buffer), "Sat %u/%u CN0 --", live->satellites,
+             live->satellites_in_view);
+  } else {
+    snprintf(buffer, sizeof(buffer), "Sat %u/%u CN0 %u", live->satellites,
+             live->satellites_in_view, live->cno_top4_avg);
+  }
   ui_draw_line(oled, 1, buffer, live_color);
 
   draw_gps_position(oled, gps, fix_color);

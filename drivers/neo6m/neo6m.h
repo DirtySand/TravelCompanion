@@ -17,6 +17,7 @@ typedef enum {
   NEO6M_UPDATED_NONE = 0,
   NEO6M_UPDATED_RMC = 1u << 0,
   NEO6M_UPDATED_GGA = 1u << 1,
+  NEO6M_UPDATED_GSV = 1u << 2,
 } neo6m_update_t;
 
 typedef struct {
@@ -38,6 +39,9 @@ typedef struct {
   uint8_t satellites;
   uint16_t hdop_x100;
   int32_t altitude_dm;
+  bool sky_valid;
+  uint8_t satellites_in_view;
+  uint8_t cno_top4_avg;
 } neo6m_data_t;
 
 typedef struct {

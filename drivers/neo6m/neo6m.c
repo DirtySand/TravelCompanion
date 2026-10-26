@@ -31,6 +31,14 @@
 #define GGA_HDOP 8
 #define GGA_ALTITUDE 9
 
+#define GSV_MESSAGES 1
+#define GSV_MESSAGE_NUMBER 2
+#define GSV_IN_VIEW 3
+#define GSV_FIRST_CNO 7
+#define GSV_BLOCK_FIELDS 4
+#define NEO6M_MAX_CNO 99
+#define NEO6M_TOP_CNO 4
+
 struct neo6m {
   void *ctx;
   neo6m_uart_read_fn uart_read;
@@ -39,6 +47,8 @@ struct neo6m {
   bool receiving;
   neo6m_data_t data;
   neo6m_stats_t stats;
+  uint8_t gsv_next;
+  uint8_t gsv_top_cno[NEO6M_TOP_CNO];
 };
 
 static neo6m_t instance;
@@ -293,6 +303,63 @@ static bool handle_gga(neo6m_t *dev, char *fields[], uint8_t count) {
   return true;
 }
 
+static void insert_top_cno(uint8_t top[], uint8_t value) {
+  for (uint8_t i = 0; i < NEO6M_TOP_CNO; i++) {
+    if (value > top[i]) {
+      uint8_t smaller = top[i];
+      top[i] = value;
+      value = smaller;
+    }
+  }
+}
+
+static uint8_t average_top_cno(const uint8_t top[]) {
+  uint16_t sum = 0;
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < NEO6M_TOP_CNO; i++) {
+    if (top[i] > 0) {
+      sum += top[i];
+      count++;
+    }
+  }
+  return (count > 0) ? (uint8_t)(sum / count) : 0;
+}
+
+static bool handle_gsv(neo6m_t *dev, char *fields[], uint8_t count) {
+  uint32_t messages, number, in_view;
+  if (count <= GSV_IN_VIEW ||
+      !parse_fixed(fields[GSV_MESSAGES], 0, &messages) ||
+      !parse_fixed(fields[GSV_MESSAGE_NUMBER], 0, &number) ||
+      !parse_fixed(fields[GSV_IN_VIEW], 0, &in_view) || messages == 0 ||
+      number == 0 || number > messages || in_view > UINT8_MAX) {
+    dev->gsv_next = 0;
+    return false;
+  }
+  if (number == 1) {
+    dev->gsv_next = 1;
+    memset(dev->gsv_top_cno, 0, sizeof(dev->gsv_top_cno));
+  }
+  if (number != dev->gsv_next) {
+    dev->gsv_next = 0;
+    return false;
+  }
+  for (uint8_t i = GSV_FIRST_CNO; i < count; i += GSV_BLOCK_FIELDS) {
+    uint32_t cno;
+    if (parse_fixed(fields[i], 0, &cno) && cno > 0 && cno <= NEO6M_MAX_CNO) {
+      insert_top_cno(dev->gsv_top_cno, (uint8_t)cno);
+    }
+  }
+  if (number < messages) {
+    dev->gsv_next++;
+    return false;
+  }
+  dev->gsv_next = 0;
+  dev->data.sky_valid = true;
+  dev->data.satellites_in_view = (uint8_t)in_view;
+  dev->data.cno_top4_avg = average_top_cno(dev->gsv_top_cno);
+  return true;
+}
+
 static uint32_t handle_sentence(neo6m_t *dev) {
   if (!verify_and_strip_checksum(dev->sentence)) {
     dev->stats.checksum_errors++;
@@ -308,6 +375,10 @@ static uint32_t handle_sentence(neo6m_t *dev) {
   }
   if (sentence_is(fields[0], "GGA")) {
     return handle_gga(dev, fields, count) ? NEO6M_UPDATED_GGA
+                                          : NEO6M_UPDATED_NONE;
+  }
+  if (sentence_is(fields[0], "GSV")) {
+    return handle_gsv(dev, fields, count) ? NEO6M_UPDATED_GSV
                                           : NEO6M_UPDATED_NONE;
   }
   return NEO6M_UPDATED_NONE;
