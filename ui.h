@@ -26,10 +26,21 @@ typedef struct {
   float humidity;
 } ui_environment_t;
 
+typedef enum {
+  UI_GPS_NO_DATA,
+  UI_GPS_TIMEOUT,
+  UI_GPS_SEARCHING,
+  UI_GPS_LOST,
+  UI_GPS_FIX,
+} ui_gps_state_t;
+
 typedef struct {
-  bool received;
-  bool fresh;
-  neo6m_data_t data;
+  ui_gps_state_t state;
+  bool has_fix;
+  bool fix_age_valid;
+  uint32_t fix_age_s;
+  neo6m_data_t live;
+  neo6m_data_t fix;
   neo6m_stats_t stats;
   uint32_t dropped_bytes;
 } ui_gps_t;

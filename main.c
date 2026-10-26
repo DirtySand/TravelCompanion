@@ -80,6 +80,10 @@ typedef struct {
   bool refresh_now;
   bool gps_received;
   absolute_time_t gps_last_rmc;
+  bool gps_has_fix;
+  neo6m_data_t gps_fix;
+  bool gps_fix_utc_valid;
+  uint32_t gps_fix_utc_s;
   bool sync_pending;
   absolute_time_t sync_deadline;
   status_message_t status;
@@ -199,6 +203,22 @@ static bool gps_is_fresh(const app_t *app) {
              (int64_t)GPS_STALE_MS * 1000;
 }
 
+static bool gps_utc_seconds(const neo6m_data_t *data, uint32_t *seconds) {
+  if (!data->time_valid || !data->date_valid || data->seconds > 59) {
+    return false;
+  }
+  ds3231_datetime_t utc = {
+      .seconds = data->seconds,
+      .minutes = data->minutes,
+      .hours = data->hours,
+      .day = data->day,
+      .month = data->month,
+      .year = data->year,
+  };
+  *seconds = datetime_to_seconds(&utc, CENTURY_BASE);
+  return true;
+}
+
 static void request_time_sync(app_t *app) {
   neo6m_data_t data;
   neo6m_get_data(app->gps, &data);
@@ -243,10 +263,24 @@ static void check_time_sync_timeout(app_t *app) {
   }
 }
 
+static void gps_store_fix(app_t *app) {
+  neo6m_data_t data;
+  neo6m_get_data(app->gps, &data);
+  if (!data.fix_valid || !data.position_valid) {
+    return;
+  }
+  app->gps_fix = data;
+  app->gps_has_fix = true;
+  app->gps_fix_utc_valid = gps_utc_seconds(&data, &app->gps_fix_utc_s);
+}
+
 static void gps_service(app_t *app) {
   uint32_t updated = NEO6M_UPDATED_NONE;
   if (neo6m_process(app->gps, &updated) != NEO6M_OK) {
     return;
+  }
+  if (updated != NEO6M_UPDATED_NONE) {
+    gps_store_fix(app);
   }
   if (updated & NEO6M_UPDATED_RMC) {
     app->gps_received = true;
@@ -276,12 +310,45 @@ static void draw_environment_card(app_t *app) {
                            !app->time_invalid);
 }
 
+static ui_gps_state_t gps_state(const app_t *app, const neo6m_data_t *live) {
+  if (!app->gps_received) {
+    return UI_GPS_NO_DATA;
+  }
+  if (!gps_is_fresh(app)) {
+    return UI_GPS_TIMEOUT;
+  }
+  if (live->fix_valid) {
+    return UI_GPS_FIX;
+  }
+  return app->gps_has_fix ? UI_GPS_LOST : UI_GPS_SEARCHING;
+}
+
+static bool gps_fix_age(const app_t *app, uint32_t *age_s) {
+  if (!app->gps_has_fix || !app->gps_fix_utc_valid || app->time_invalid) {
+    return false;
+  }
+  ds3231_datetime_t now;
+  if (ds3231_read_datetime(app->ds3231, &now) != DS3231_OK) {
+    return false;
+  }
+  uint32_t now_s = datetime_to_seconds(&now, CENTURY_BASE);
+  if (now_s < app->gps_fix_utc_s) {
+    return false;
+  }
+  *age_s = now_s - app->gps_fix_utc_s;
+  return true;
+}
+
 static void draw_gps_card(app_t *app) {
   ui_gps_t gps = {0};
-  gps.received = app->gps_received;
-  gps.fresh = gps_is_fresh(app);
-  neo6m_get_data(app->gps, &gps.data);
+  neo6m_get_data(app->gps, &gps.live);
   neo6m_get_stats(app->gps, &gps.stats);
+  gps.state = gps_state(app, &gps.live);
+  gps.has_fix = app->gps_has_fix;
+  gps.fix = app->gps_fix;
+  if (gps.state != UI_GPS_FIX) {
+    gps.fix_age_valid = gps_fix_age(app, &gps.fix_age_s);
+  }
   gps.dropped_bytes = neo6m_port_dropped_bytes();
   ui_draw_gps_card(app->oled, &gps);
 }

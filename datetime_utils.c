@@ -61,15 +61,37 @@ void datetime_add_seconds(ds3231_datetime_t *datetime, int seconds,
   }
 }
 
-void datetime_to_local(const ds3231_datetime_t *datetime, ds3231_datetime_t *local_datetime, uint16_t century_base) {
+void datetime_to_local(const ds3231_datetime_t *datetime,
+                       ds3231_datetime_t *local_datetime,
+                       uint16_t century_base) {
   if (datetime == NULL || local_datetime == NULL) {
     return;
   }
   *local_datetime = *datetime;
   uint16_t full_year = century_base + local_datetime->year;
   int offset_seconds = TIMEZONE_STANDARD_OFFSET_SECONDS;
-  if (is_dst_active(datetime->day, datetime->month, full_year, datetime->hours)) {
+  if (is_dst_active(datetime->day, datetime->month, full_year,
+                    datetime->hours)) {
     offset_seconds += TIMEZONE_DST_OFFSET_SECONDS;
   }
   datetime_add_seconds(local_datetime, offset_seconds, century_base);
+}
+
+uint32_t datetime_to_seconds(const ds3231_datetime_t *datetime,
+                             uint16_t century_base) {
+  if (datetime == NULL || datetime->month < 1 || datetime->month > 12 ||
+      datetime->day < 1) {
+    return 0;
+  }
+  uint16_t year = century_base + datetime->year;
+  uint32_t days = 0;
+  for (uint16_t y = century_base; y < year; y++) {
+    days += is_leap_year(y) ? 366u : 365u;
+  }
+  for (uint8_t m = 1; m < datetime->month; m++) {
+    days += days_in_month(m, year);
+  }
+  days += datetime->day - 1u;
+  return ((days * 24u + datetime->hours) * 60u + datetime->minutes) * 60u +
+         datetime->seconds;
 }
