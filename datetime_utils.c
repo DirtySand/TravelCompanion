@@ -69,7 +69,7 @@ void datetime_to_local(const ds3231_datetime_t *datetime, ds3231_datetime_t *loc
   uint16_t full_year = century_base + local_datetime->year;
   int offset_seconds = TIMEZONE_STANDARD_OFFSET_SECONDS;
   if (is_dst_active(datetime->day, datetime->month, full_year, datetime->hours)) {
-    offset_seconds = TIMEZONE_DST_OFFSET_SECONDS;
+    offset_seconds += TIMEZONE_DST_OFFSET_SECONDS;
   }
   datetime_add_seconds(local_datetime, offset_seconds, century_base);
 }
