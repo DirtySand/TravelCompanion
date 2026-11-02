@@ -26,3 +26,7 @@ compile_commands.json
 *~
 .DS_Store
 .clangd
+
+# Private key for decrypting SD logs - never commit it
+*.key
+log_pubkey.h

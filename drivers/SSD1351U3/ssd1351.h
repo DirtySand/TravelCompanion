@@ -2,7 +2,10 @@
 #define SSD1351_H
 
 #include "ssd1351_port.h"
+#include <stdbool.h>
 #include <stdint.h>
+
+#define SSD1351_CONTRAST_MAX 0x0F
 
 typedef struct ssd1351 ssd1351_t;
 
@@ -23,5 +26,7 @@ void ssd1351_fill_rect(ssd1351_t *dev, uint8_t x, uint8_t y, uint8_t w, uint8_t 
 void ssd1351_draw_char(ssd1351_t *dev, uint8_t x, uint8_t y, char c, uint16_t fg, uint16_t bg);
 void ssd1351_draw_string(ssd1351_t *dev, uint8_t x, uint8_t y, const char *s, uint16_t fg, uint16_t bg);
 void ssd1351_set_rotation(ssd1351_t *dev, ssd1351_rotation_t rotation);
+void ssd1351_set_contrast(ssd1351_t *dev, uint8_t level);
+void ssd1351_set_sleep(ssd1351_t *dev, bool sleep);
 
 #endif

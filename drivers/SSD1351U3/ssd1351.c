@@ -143,6 +143,16 @@ void ssd1351_draw_string(ssd1351_t *dev, uint8_t x, uint8_t y,
     }
 }
 
+void ssd1351_set_contrast(ssd1351_t *dev, uint8_t level) {
+    uint8_t value = level & SSD1351_CONTRAST_MAX;
+    write_command(dev, 0xC7);
+    write_data(dev, &value, 1);
+}
+
+void ssd1351_set_sleep(ssd1351_t *dev, bool sleep) {
+    write_command(dev, sleep ? 0xAE : 0xAF);
+}
+
 void ssd1351_set_rotation(ssd1351_t *dev, ssd1351_rotation_t rotation) {
     static const uint8_t xor_mask[4] = {
         [SSD1351_ROT_0] = 0,

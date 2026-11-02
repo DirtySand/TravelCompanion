@@ -3,12 +3,11 @@
 
 #include <stdint.h>
 
-typedef enum {
-  POWER_WAKE_NONE   = 0,
-  POWER_WAKE_RTC    = 1u << 0,
-  POWER_WAKE_BUTTON = 1u << 1,
-} power_wake_t;
+#define POWER_PIN_MASK(pin) (1u << (pin))
 
-uint32_t power_dormant_until_pins(uint8_t rtc_int_pin, uint8_t button_pin);
+// Enters DORMANT until the RTC INT pin is low (level: an alarm that fired
+// just before sleeping still wakes immediately) or one of the button pins
+// sees a falling edge. Returns the GPIO mask of the pins that woke the chip.
+uint32_t power_dormant_until(uint8_t rtc_int_pin, uint32_t button_pin_mask);
 
 #endif // power_h

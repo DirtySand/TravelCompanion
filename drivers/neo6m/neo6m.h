@@ -66,6 +66,8 @@ neo6m_status_t neo6m_get_data(const neo6m_t *dev, neo6m_data_t *data);
 neo6m_status_t neo6m_get_stats(const neo6m_t *dev, neo6m_stats_t *stats);
 neo6m_status_t neo6m_power_off(neo6m_t *dev);
 neo6m_status_t neo6m_power_on(neo6m_t *dev);
+neo6m_status_t neo6m_wake(neo6m_t *dev);
+neo6m_status_t neo6m_configure_power_save(neo6m_t *dev);
 neo6m_status_t neo6m_poll_time_info(neo6m_t *dev);
 
 #endif // NEO6M_H
