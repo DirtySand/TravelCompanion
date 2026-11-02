@@ -19,7 +19,7 @@ static ssd1351_hw_t oled_hw = {
 };
 
 void ssd1351_port_hw_init(void) {
-  spi_init(oled_hw.spi, 10 * 1000 * 1000);
+  spi_init(oled_hw.spi, SPI0_BAUDRATE);
   spi_set_format(oled_hw.spi, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
   gpio_set_function(SSD1351_PIN_CLK, GPIO_FUNC_SPI);
   gpio_set_function(SSD1351_PIN_DIN, GPIO_FUNC_SPI);

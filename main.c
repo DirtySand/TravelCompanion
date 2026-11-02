@@ -13,6 +13,8 @@
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
 #include "power.h"
+#include "sample.h"
+#include "sd_log.h"
 #include "time_sync.h"
 #include "timezone.h"
 #include "ui.h"
@@ -20,15 +22,28 @@
 #include <stdio.h>
 #include <sys/types.h>
 
-// #define WAKE_DEBUG
-
 #define MANUAL_REFRESH_MS 1000
+// Moves the refresh phase into the middle of the RTC second when the shown
+// seconds stop advancing by exactly one.
+#define REFRESH_PHASE_SHIFT_MS 500
+#define SECONDS_PER_MINUTE 60u
 #define GPS_STALE_MS 3000
+// Power Save Mode: without a fix the receiver may stay silent for up to the
+// search period (10 s) - only report a timeout after a longer silence.
+#define GPS_IDLE_MS 15000
 #define STATUS_MESSAGE_MS 4000
 #define GPS_SYNC_TIMEOUT_MS 2500
-#define GPS_OFF_GRACE_MS 2000
+#define GPS_OFF_GRACE_MS 3000
 #define GPS_START_TIMEOUT_MS 5000
+// u-blox 6 Receiver Description 9.3.3.1: 0xFF, ~0.5 s, then the command.
+#define GPS_WAKE_DELAY_MS 500
+// Backpack sample: wait for the next RMC, then for the GGA of that epoch.
+#define GPS_SAMPLE_RMC_MS 1200
+#define GPS_SAMPLE_GGA_MS 400
 #define TIME_INFO_POLL_MS 30000
+#define BURN_IN_SHIFT_MS 60000
+#define BURN_IN_STEP_PX 2
+#define BACKPACK_VIEW_MS 2000
 #define GPS_AUTO_SYNC_DEFAULT false
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
@@ -54,16 +69,24 @@ typedef enum {
 
 typedef enum {
   CARD_ENVIRONMENT,
-  CARD_GPS,
+  CARD_POSITION,
+  CARD_SATELLITES,
   CARD_BACKPACK,
   CARD_COUNT,
 } card_t;
 
 static const char *const card_titles[CARD_COUNT] = {
     [CARD_ENVIRONMENT] = "ENV",
-    [CARD_GPS] = "GPS",
+    [CARD_POSITION] = "POS",
+    [CARD_SATELLITES] = "SAT",
     [CARD_BACKPACK] = "PACK",
 };
+
+typedef enum {
+  GPS_CMD_CONFIGURE = 1u << 0,
+  GPS_CMD_POLL_TIME = 1u << 1,
+  GPS_CMD_POWER_OFF = 1u << 2,
+} gps_command_t;
 
 typedef struct {
   char text[UI_COLUMNS + 1];
@@ -90,11 +113,23 @@ typedef struct {
   neo6m_data_t gps_fix;
   bool gps_fix_utc_valid;
   uint32_t gps_fix_utc_s;
+  uint32_t gps_commands;
+  bool gps_command_woken;
+  absolute_time_t gps_command_at;
   bool sync_pending;
   absolute_time_t sync_deadline;
   bool auto_sync;
   bool auto_sync_done;
   absolute_time_t time_info_poll_at;
+  ds3231_datetime_t next_sample;
+  bool schedule_valid;
+  uint32_t shift_step;
+  absolute_time_t shift_at;
+  bool view_active;
+  absolute_time_t view_deadline;
+  bool shown_second_valid;
+  uint8_t shown_second;
+  bool refresh_resync;
   status_message_t status;
 } app_t;
 
@@ -116,100 +151,73 @@ static bool status_active(const app_t *app) {
   return app->status.text[0] != '\0' && !time_reached(app->status.expires);
 }
 
-static void display_backpack_clock(ssd1351_t *oled,
-                                   const ds3231_datetime_t *utc) {
-  ds3231_datetime_t local;
-  char buffer[32];
-  datetime_to_local(utc, &local, CENTURY_BASE);
-  snprintf(buffer, sizeof(buffer), "Time: %02d:%02d", local.hours,
-           local.minutes);
-  ssd1351_draw_string(oled, 0, 30, buffer, 0x3000, 0x0000);
-  snprintf(buffer, sizeof(buffer), "Date: %02d-%02d-%04d", local.day,
-           local.month, CENTURY_BASE + local.year);
-  ssd1351_draw_string(oled, 0, 40, buffer, 0x3000, 0x0000);
+static int64_t ms_since(absolute_time_t since) {
+  return absolute_time_diff_us(since, get_absolute_time()) / 1000;
 }
 
-static void display_backpack_screen(ssd1351_t *oled, ds3231_t *ds3231) {
-  ssd1351_fill(oled, 0x0000);
-  ssd1351_draw_string(oled, 0, 0, "Backpack mode", 0x2000, 0x0000);
-  ds3231_datetime_t current_time;
-  if (ds3231_read_datetime(ds3231, &current_time) == DS3231_OK) {
-    display_backpack_clock(oled, &current_time);
+// ---------------------------------------------------------------------------
+// Sample schedule (DS3231 alarm 1, same in both modes)
+// ---------------------------------------------------------------------------
+
+static uint32_t to_seconds(const ds3231_datetime_t *datetime) {
+  return datetime_to_seconds(datetime, CENTURY_BASE);
+}
+
+// Arms alarm 1 for app->next_sample, moving it forward until it is still in
+// the future after the write: an alarm written for a second that has
+// already started would only match again a month later.
+static bool arm_sample_alarm(app_t *app, bool advance_first) {
+  ds3231_datetime_t now;
+  if (ds3231_read_datetime(app->ds3231, &now) != DS3231_OK) {
+    return false;
+  }
+  if (advance_first) {
+    datetime_add_seconds(&app->next_sample, SAMPLE_INTERVAL_SECONDS,
+                         CENTURY_BASE);
+  }
+  while (true) {
+    while (to_seconds(&app->next_sample) <= to_seconds(&now)) {
+      datetime_add_seconds(&app->next_sample, SAMPLE_INTERVAL_SECONDS,
+                           CENTURY_BASE);
+    }
+    const ds3231_datetime_t *n = &app->next_sample;
+    if (ds3231_clear_alarm1_flag(app->ds3231) != DS3231_OK ||
+        ds3231_set_alarm_1(app->ds3231, n->hours, n->minutes, n->seconds,
+                           n->day, DS3231_ALARM1_MATCH_DATE) != DS3231_OK ||
+        ds3231_read_datetime(app->ds3231, &now) != DS3231_OK) {
+      return false;
+    }
+    if (to_seconds(&app->next_sample) > to_seconds(&now)) {
+      app->schedule_valid = true;
+      return true;
+    }
   }
 }
 
-static ds3231_status_t arm_next_alarm(ds3231_t *dev) {
-  ds3231_datetime_t datetime;
-  ds3231_status_t status = ds3231_read_datetime(dev, &datetime);
-  if (status != DS3231_OK) {
-    return status;
+// Starts the schedule on the interval grid (e.g. :00, :10, :20 ...).
+static bool schedule_from_now(app_t *app) {
+  ds3231_datetime_t now;
+  if (ds3231_read_datetime(app->ds3231, &now) != DS3231_OK) {
+    app->schedule_valid = false;
+    return false;
   }
-  datetime_add_seconds(&datetime, BACKPACK_INTERVAL_SECONDS, CENTURY_BASE);
-  return ds3231_set_alarm_1(dev, datetime.hours, datetime.minutes,
-                            datetime.seconds, datetime.day,
-                            DS3231_ALARM1_MATCH_DATE);
-}
-
-static bool restart_backpack_alarm(ds3231_t *ds3231) {
-  return ds3231_clear_alarm1_flag(ds3231) == DS3231_OK &&
-         arm_next_alarm(ds3231) == DS3231_OK;
-}
-
-static bool read_environment(sht40_t *sht40, bme680_t *bme680,
-                             float *temperature, float *humidity,
-                             float *pressure) {
-  bool ok = true;
-
-  sht40_status_t sht40_status =
-      sht40_measure(sht40, SHT40_PRECISION_HIGH, temperature, humidity);
-  if (sht40_status != SHT40_OK) {
-    printf("SHT40 measurement failed: %d\n", sht40_status);
-    ok = false;
+  uint32_t offset =
+      SAMPLE_INTERVAL_SECONDS - (to_seconds(&now) % SAMPLE_INTERVAL_SECONDS);
+  app->next_sample = now;
+  datetime_add_seconds(&app->next_sample, (int)offset, CENTURY_BASE);
+  if (!arm_sample_alarm(app, false)) {
+    app->schedule_valid = false;
+    return false;
   }
-
-  float bme680_temperature, bme680_humidity;
-  bme680_status_t bme680_status = bme680_read_measurement_forced(
-      bme680, &bme680_temperature, pressure, &bme680_humidity);
-  if (bme680_status != BME680_OK) {
-    printf("BME680 measurement failed: %d\n", bme680_status);
-    ok = false;
-  }
-
-  return ok;
+  return true;
 }
 
-static void take_sample(sht40_t *sht40, bme680_t *bme680, ds3231_t *ds3231) {
-  float temperature, pressure, humidity;
-  ds3231_datetime_t datetime;
-  ds3231_read_datetime(ds3231, &datetime);
-  if (read_environment(sht40, bme680, &temperature, &humidity, &pressure)) {
-    printf("Sample taken at %02d:%02d:%02d on %02d-%02d-%04d: Temp=%.2fC, "
-           "Pres=%.2fhPa, Hum=%.2f%%\n",
-           datetime.hours, datetime.minutes, datetime.seconds, datetime.day,
-           datetime.month, CENTURY_BASE + datetime.year, temperature,
-           pressure / 100, humidity);
-  } else {
-    printf("Failed to take sample at %02d:%02d:%02d on %02d-%02d-%04d\n",
-           datetime.hours, datetime.minutes, datetime.seconds, datetime.day,
-           datetime.month, CENTURY_BASE + datetime.year);
-  }
-}
-
-#ifdef WAKE_DEBUG
-static void display_wake_debug(ssd1351_t *oled, uint32_t wake) {
-  static uint32_t wake_count = 0;
-  char buffer[32];
-  wake_count++;
-  snprintf(buffer, sizeof(buffer), "W%lu R%d B%d", (unsigned long)wake_count,
-           (wake & POWER_WAKE_RTC) != 0, (wake & POWER_WAKE_BUTTON) != 0);
-  ssd1351_draw_string(oled, 0, 60, buffer, 0x3000, 0x0000);
-}
-#endif
+// ---------------------------------------------------------------------------
+// GPS
+// ---------------------------------------------------------------------------
 
 static bool gps_is_fresh(const app_t *app) {
-  return app->gps_received &&
-         absolute_time_diff_us(app->gps_last_rmc, get_absolute_time()) <
-             (int64_t)GPS_STALE_MS * 1000;
+  return app->gps_received && ms_since(app->gps_last_rmc) < GPS_STALE_MS;
 }
 
 static bool gps_utc_seconds(const neo6m_data_t *data, uint32_t *seconds) {
@@ -226,6 +234,63 @@ static bool gps_utc_seconds(const neo6m_data_t *data, uint32_t *seconds) {
   };
   *seconds = datetime_to_seconds(&utc, CENTURY_BASE);
   return true;
+}
+
+// Commands to a receiver in Power Save Mode: wake it with 0xFF, wait ~0.5 s,
+// then send everything queued (u-blox 6 Receiver Description 9.3.3.1).
+static void gps_request(app_t *app, gps_command_t command) {
+  if (command == GPS_CMD_POWER_OFF) {
+    app->gps_commands &= ~(uint32_t)(GPS_CMD_CONFIGURE | GPS_CMD_POLL_TIME);
+  } else if (command == GPS_CMD_CONFIGURE) {
+    app->gps_commands &= ~(uint32_t)GPS_CMD_POWER_OFF;
+  }
+  app->gps_commands |= command;
+}
+
+static void gps_send_commands(app_t *app) {
+  neo6m_status_t status = NEO6M_OK;
+  if (app->gps_commands & GPS_CMD_CONFIGURE) {
+    status = neo6m_configure_power_save(app->gps);
+  }
+  if (status == NEO6M_OK && (app->gps_commands & GPS_CMD_POLL_TIME)) {
+    status = neo6m_poll_time_info(app->gps);
+  }
+  if (status == NEO6M_OK && (app->gps_commands & GPS_CMD_POWER_OFF)) {
+    status = neo6m_power_off(app->gps);
+  }
+  if (status != NEO6M_OK) {
+    show_error(app, "GPS UART error");
+  }
+  app->gps_commands = 0;
+  app->gps_command_woken = false;
+}
+
+static void gps_commands_service(app_t *app) {
+  if (app->gps_commands == 0) {
+    return;
+  }
+  if (!app->gps_command_woken) {
+    neo6m_wake(app->gps);
+    app->gps_command_woken = true;
+    app->gps_command_at = make_timeout_time_ms(GPS_WAKE_DELAY_MS);
+    return;
+  }
+  if (time_reached(app->gps_command_at)) {
+    gps_send_commands(app);
+  }
+}
+
+// Used before going dormant: nothing may stay queued.
+static void gps_commands_finish(app_t *app) {
+  if (app->gps_commands == 0) {
+    return;
+  }
+  if (!app->gps_command_woken) {
+    neo6m_wake(app->gps);
+    app->gps_command_at = make_timeout_time_ms(GPS_WAKE_DELAY_MS);
+  }
+  sleep_until(app->gps_command_at);
+  gps_send_commands(app);
 }
 
 static void start_time_sync(app_t *app) {
@@ -269,6 +334,10 @@ static void finish_time_sync(app_t *app) {
            data.hours, data.minutes, data.seconds, data.day, data.month,
            CENTURY_BASE + data.year);
     set_status(app, "Time synced", UI_COLOR_GREEN);
+    // The RTC may have jumped: restart the sample schedule from the new time.
+    if (!schedule_from_now(app)) {
+      show_error(app, "RTC alarm error");
+    }
     break;
   case TIME_SYNC_LEAP_SECOND:
     break;
@@ -305,7 +374,7 @@ static void auto_sync_check(app_t *app) {
     return;
   }
   if (time_reached(app->time_info_poll_at)) {
-    neo6m_poll_time_info(app->gps);
+    gps_request(app, GPS_CMD_POLL_TIME);
     app->time_info_poll_at = make_timeout_time_ms(TIME_INFO_POLL_MS);
     return;
   }
@@ -333,12 +402,11 @@ static const char *auto_sync_hint(const app_t *app, uint16_t *color) {
 }
 
 static void gps_set_enabled(app_t *app, bool enabled) {
-  neo6m_status_t status =
-      enabled ? neo6m_power_on(app->gps) : neo6m_power_off(app->gps);
-  if (status != NEO6M_OK) {
+  if (enabled && neo6m_power_on(app->gps) != NEO6M_OK) {
     show_error(app, "GPS UART error");
     return;
   }
+  gps_request(app, enabled ? GPS_CMD_CONFIGURE : GPS_CMD_POWER_OFF);
   app->gps_enabled = enabled;
   app->gps_received = false;
   app->gps_toggled_at = get_absolute_time();
@@ -348,10 +416,6 @@ static void gps_set_enabled(app_t *app, bool enabled) {
   }
   printf("GPS %s\n", enabled ? "on" : "off");
   set_status(app, enabled ? "GPS on" : "GPS off", UI_COLOR_GRAY);
-}
-
-static int64_t ms_since(absolute_time_t since) {
-  return absolute_time_diff_us(since, get_absolute_time()) / 1000;
 }
 
 static void gps_store_fix(app_t *app) {
@@ -365,15 +429,16 @@ static void gps_store_fix(app_t *app) {
   app->gps_fix_utc_valid = gps_utc_seconds(&data, &app->gps_fix_utc_s);
 }
 
-static void gps_service(app_t *app) {
+// Returns the NEO6M_UPDATED_* flags of this call.
+static uint32_t gps_service(app_t *app) {
   uint32_t updated = NEO6M_UPDATED_NONE;
   if (neo6m_process(app->gps, &updated) != NEO6M_OK) {
-    return;
+    return NEO6M_UPDATED_NONE;
   }
   if (!app->gps_enabled) {
-    if (!(updated & NEO6M_UPDATED_RMC) ||
+    if (!(updated & NEO6M_UPDATED_RMC) || app->gps_commands != 0 ||
         ms_since(app->gps_toggled_at) < GPS_OFF_GRACE_MS) {
-      return;
+      return updated;
     }
     app->gps_enabled = true;
     app->gps_toggled_at = get_absolute_time();
@@ -385,28 +450,169 @@ static void gps_service(app_t *app) {
   if (updated & NEO6M_UPDATED_RMC) {
     app->gps_received = true;
     app->gps_last_rmc = get_absolute_time();
-    if (app->sync_pending) {
-      finish_time_sync(app);
-    } else {
-      auto_sync_check(app);
+    if (app->mode == MODE_MANUAL) {
+      if (app->sync_pending) {
+        finish_time_sync(app);
+      } else {
+        auto_sync_check(app);
+      }
+    }
+  }
+  return updated;
+}
+
+// After a dormant period the system timer has not advanced, so "fresh" is
+// meaningless: wait for an RMC (and the GGA of the same epoch) that really
+// arrived after the wake-up. Returns true if an RMC was received.
+static bool gps_wait_for_epoch(app_t *app) {
+  if (!app->gps_enabled) {
+    return false;
+  }
+  bool rmc = false;
+  absolute_time_t deadline = make_timeout_time_ms(GPS_SAMPLE_RMC_MS);
+  while (true) {
+    uint32_t updated = gps_service(app);
+    if (updated & NEO6M_UPDATED_RMC) {
+      rmc = true;
+      deadline = make_timeout_time_ms(GPS_SAMPLE_GGA_MS);
+    }
+    if ((rmc && (updated & NEO6M_UPDATED_GGA)) ||
+        best_effort_wfe_or_timeout(deadline)) {
+      return rmc;
     }
   }
 }
 
-static void draw_environment_card(app_t *app) {
-  ui_environment_t env = {0};
-  env.valid = read_environment(app->sht40, app->bme680, &env.temperature,
-                               &env.humidity, &env.pressure);
-  if (env.valid) {
-    printf("Temperature: %.2f°C, Pressure: %.2f hPa, Humidity: %.2f %%\n",
-           env.temperature, env.pressure / 100, env.humidity);
-  }
+// ---------------------------------------------------------------------------
+// Sampling and logging
+// ---------------------------------------------------------------------------
 
+static bool read_climate(sht40_t *sht40, float *temperature, float *humidity) {
+  sht40_status_t status =
+      sht40_measure(sht40, SHT40_PRECISION_HIGH, temperature, humidity);
+  if (status != SHT40_OK) {
+    printf("SHT40 measurement failed: %d\n", status);
+    return false;
+  }
+  return true;
+}
+
+static bool read_pressure(bme680_t *bme680, float *pressure) {
+  float temperature, humidity;
+  bme680_status_t status = bme680_read_measurement_forced(
+      bme680, &temperature, pressure, &humidity);
+  if (status != BME680_OK) {
+    printf("BME680 measurement failed: %d\n", status);
+    return false;
+  }
+  return true;
+}
+
+static void fill_gps(const app_t *app, sample_t *s, bool data_received) {
+  if (!app->gps_enabled) {
+    s->gps = SAMPLE_GPS_OFF;
+    return;
+  }
+  if (!data_received) {
+    s->gps = SAMPLE_GPS_NO_DATA;
+    return;
+  }
+  neo6m_data_t live;
+  neo6m_get_data(app->gps, &live);
+  s->satellites = live.satellites;
+  if (!live.fix_valid || !live.position_valid) {
+    s->gps = SAMPLE_GPS_NO_FIX;
+    return;
+  }
+  s->gps = SAMPLE_GPS_FIX;
+  s->latitude_e7 = live.latitude_e7;
+  s->longitude_e7 = live.longitude_e7;
+  s->altitude_valid = live.altitude_valid;
+  s->altitude_dm = live.altitude_dm;
+  s->speed_valid = live.speed_valid;
+  s->speed_kmh_x10 = live.speed_kmh_x10;
+  s->course_valid = live.course_valid;
+  s->course_x100 = live.course_x100;
+  s->hdop_valid = live.hdop_valid;
+  s->hdop_x100 = live.hdop_x100;
+}
+
+static void take_sample(app_t *app, const ds3231_datetime_t *scheduled) {
+  sample_t s = {0};
+  s.utc = *scheduled;
+  s.time_valid = !app->time_invalid;
+  s.mode = (app->mode == MODE_BACKPACK) ? SAMPLE_MODE_BACKPACK
+                                        : SAMPLE_MODE_MANUAL;
+  bool gps_data = (app->mode == MODE_BACKPACK) ? gps_wait_for_epoch(app)
+                                               : gps_is_fresh(app);
+  s.climate_valid = read_climate(app->sht40, &s.temperature_c, &s.humidity_pct);
+  s.pressure_valid = read_pressure(app->bme680, &s.pressure_pa);
+  fill_gps(app, &s, gps_data);
+
+  char line[SAMPLE_CSV_MAX];
+  size_t length = sample_to_csv(&s, line, sizeof(line));
+  if (length == 0) {
+    return;
+  }
+  printf("%s", line);
+  sd_log_append(line, length, &s.utc, s.time_valid, to_seconds(&s.utc));
+}
+
+// Returns false on an RTC error.
+static bool handle_sample_alarm(app_t *app) {
+  bool triggered = false;
+  if (ds3231_is_alarm1_triggered(app->ds3231, &triggered) != DS3231_OK) {
+    return false;
+  }
+  if (!triggered) {
+    return true;
+  }
+  ds3231_datetime_t scheduled = app->next_sample;
+  // Clear A1F and arm the next alarm before measuring (INT released early).
+  if (!arm_sample_alarm(app, true)) {
+    return false;
+  }
+  take_sample(app, &scheduled);
+  return true;
+}
+
+static bool rtc_alarm_pending(void) { return !gpio_get(RTC_INT_PIN); }
+
+// ---------------------------------------------------------------------------
+// Manual mode UI
+// ---------------------------------------------------------------------------
+
+// Called for scheduled (1 s) refreshes only: the shown second must advance by
+// exactly one, otherwise the refresh sits on the RTC second boundary.
+static void track_shown_second(app_t *app, uint8_t second) {
+  if (app->shown_second_valid) {
+    uint8_t step = (uint8_t)((second + SECONDS_PER_MINUTE - app->shown_second) %
+                             SECONDS_PER_MINUTE);
+    if (step != 1) {
+      app->refresh_resync = true;
+    }
+  }
+  app->shown_second = second;
+  app->shown_second_valid = true;
+}
+
+static void draw_environment_card(app_t *app, bool scheduled) {
+  // RTC first: its read time relative to the refresh tick must not depend on
+  // how long the sensor measurements take.
   ds3231_datetime_t datetime;
   ds3231_status_t ds3231_status = ds3231_read_datetime(app->ds3231, &datetime);
   if (ds3231_status != DS3231_OK) {
     printf("Failed to read datetime: %d\n", ds3231_status);
+    app->shown_second_valid = false;
+  } else if (scheduled) {
+    track_shown_second(app, datetime.seconds);
   }
+
+  ui_environment_t env = {0};
+  env.climate_valid =
+      read_climate(app->sht40, &env.temperature, &env.humidity);
+  env.pressure_valid = read_pressure(app->bme680, &env.pressure);
+
   ui_draw_environment_card(app->oled, &env,
                            (ds3231_status == DS3231_OK) ? &datetime : NULL,
                            !app->time_invalid);
@@ -422,7 +628,8 @@ static ui_gps_state_t gps_state(const app_t *app, const neo6m_data_t *live) {
                : UI_GPS_NO_DATA;
   }
   if (!gps_is_fresh(app)) {
-    return UI_GPS_TIMEOUT;
+    return (ms_since(app->gps_last_rmc) < GPS_IDLE_MS) ? UI_GPS_IDLE
+                                                         : UI_GPS_TIMEOUT;
   }
   if (live->fix_valid) {
     return UI_GPS_FIX;
@@ -446,24 +653,24 @@ static bool gps_fix_age(const app_t *app, uint32_t *age_s) {
   return true;
 }
 
-static void draw_gps_card(app_t *app) {
-  ui_gps_t gps = {0};
-  neo6m_get_data(app->gps, &gps.live);
-  neo6m_get_stats(app->gps, &gps.stats);
-  gps.state = gps_state(app, &gps.live);
-  gps.has_fix = app->gps_has_fix;
-  gps.fix = app->gps_fix;
-  if (gps.state != UI_GPS_FIX) {
-    gps.fix_age_valid = gps_fix_age(app, &gps.fix_age_s);
+static void collect_gps(app_t *app, ui_gps_t *gps) {
+  neo6m_get_data(app->gps, &gps->live);
+  neo6m_get_stats(app->gps, &gps->stats);
+  gps->state = gps_state(app, &gps->live);
+  gps->has_fix = app->gps_has_fix;
+  gps->fix = app->gps_fix;
+  if (gps->state != UI_GPS_FIX) {
+    gps->fix_age_valid = gps_fix_age(app, &gps->fix_age_s);
   }
-  gps.dropped_bytes = neo6m_port_dropped_bytes();
-  ui_draw_gps_card(app->oled, &gps);
+  gps->dropped_bytes = neo6m_port_dropped_bytes();
 }
 
 static const char *card_hint(const app_t *app, uint16_t *color) {
   *color = UI_COLOR_GRAY;
   switch (app->card) {
-  case CARD_GPS:
+  case CARD_POSITION:
+    return app->gps_enabled ? "" : "Hold BACK: on";
+  case CARD_SATELLITES:
     if (!app->gps_enabled) {
       return "Hold BACK: on";
     }
@@ -479,44 +686,71 @@ static const char *card_hint(const app_t *app, uint16_t *color) {
   }
 }
 
-static const char *gps_footer_tag(const app_t *app, uint16_t *color) {
-  *color = UI_COLOR_GRAY;
-  if (app->card == CARD_GPS || !app->gps_enabled) {
-    return "";
-  }
+static uint16_t gps_tag_color(const app_t *app) {
   neo6m_data_t live;
   neo6m_get_data(app->gps, &live);
   switch (gps_state(app, &live)) {
   case UI_GPS_FIX:
-    *color = UI_COLOR_GREEN;
-    break;
+    return UI_COLOR_GREEN;
   case UI_GPS_STARTING:
   case UI_GPS_SEARCHING:
   case UI_GPS_LOST:
-    *color = UI_COLOR_YELLOW;
-    break;
+  case UI_GPS_IDLE:
+    return UI_COLOR_YELLOW;
   default:
-    *color = UI_COLOR_RED;
-    break;
+    return UI_COLOR_RED;
   }
-  return "GPS";
 }
 
-static void draw_current_card(app_t *app) {
+static uint16_t sd_tag_color(void) {
+  switch (sd_log_state()) {
+  case SD_LOG_READY:
+    return UI_COLOR_GREEN;
+  case SD_LOG_ERROR:
+    return UI_COLOR_RED;
+  case SD_LOG_NO_CARD:
+  default:
+    return UI_COLOR_GRAY;
+  }
+}
+
+static void draw_footer(app_t *app) {
+  ui_tag_t tags[2];
+  uint8_t count = 0;
+  tags[count++] = (ui_tag_t){.text = "SD", .color = sd_tag_color()};
+  bool gps_card =
+      app->card == CARD_POSITION || app->card == CARD_SATELLITES;
+  if (app->gps_enabled && !gps_card) {
+    tags[count++] = (ui_tag_t){.text = "GPS", .color = gps_tag_color(app)};
+  }
+  ui_draw_footer(app->oled, card_titles[app->card], (uint8_t)(app->card + 1),
+                 CARD_COUNT, tags, count);
+}
+
+static void draw_current_card(app_t *app, bool scheduled) {
   if (app->clear_screen) {
     ui_clear(app->oled);
     app->clear_screen = false;
   }
+  if (app->card != CARD_ENVIRONMENT) {
+    app->shown_second_valid = false;
+  }
+  ui_gps_t gps = {0};
   switch (app->card) {
   case CARD_ENVIRONMENT:
-    draw_environment_card(app);
+    draw_environment_card(app, scheduled);
     break;
-  case CARD_GPS:
-    draw_gps_card(app);
+  case CARD_POSITION:
+    collect_gps(app, &gps);
+    ui_draw_position_card(app->oled, &gps);
+    break;
+  case CARD_SATELLITES:
+    collect_gps(app, &gps);
+    ui_draw_satellite_card(app->oled, &gps);
     break;
   case CARD_BACKPACK:
     ui_draw_backpack_card(app->oled, !app->time_invalid,
-                          BACKPACK_INTERVAL_SECONDS);
+                          SAMPLE_INTERVAL_SECONDS);
     break;
   default:
     break;
@@ -528,29 +762,131 @@ static void draw_current_card(app_t *app) {
     const char *hint = card_hint(app, &color);
     ui_draw_status(app->oled, hint, color);
   }
-  uint16_t tag_color;
-  const char *tag = gps_footer_tag(app, &tag_color);
-  ui_draw_footer(app->oled, card_titles[app->card], (uint8_t)(app->card + 1),
-                 CARD_COUNT, tag, tag_color);
+  draw_footer(app);
+}
+
+// Moves the whole layout a few pixels every minute (OLED burn-in).
+static void apply_shift(const app_t *app) {
+  uint8_t steps_x = UI_SHIFT_MAX_X / BURN_IN_STEP_PX + 1;
+  uint8_t steps_y = UI_SHIFT_MAX_Y / BURN_IN_STEP_PX + 1;
+  uint8_t dx = (uint8_t)((app->shift_step % steps_x) * BURN_IN_STEP_PX);
+  uint8_t dy =
+      (uint8_t)(((app->shift_step / steps_x) % steps_y) * BURN_IN_STEP_PX);
+  ui_set_shift(dx, dy);
+}
+
+static void update_shift(app_t *app) {
+  if (!time_reached(app->shift_at)) {
+    return;
+  }
+  app->shift_step++;
+  app->shift_at = make_timeout_time_ms(BURN_IN_SHIFT_MS);
+  apply_shift(app);
+  app->clear_screen = true;
+}
+
+// ---------------------------------------------------------------------------
+// Backpack mode
+// ---------------------------------------------------------------------------
+
+static void show_backpack_view(app_t *app) {
+  ds3231_datetime_t now;
+  bool ok = ds3231_read_datetime(app->ds3231, &now) == DS3231_OK;
+  ssd1351_set_contrast(app->oled, OLED_CONTRAST_BACKPACK);
+  ui_draw_backpack_view(app->oled, ok ? &now : NULL,
+                        sd_log_state() == SD_LOG_ERROR);
+  ssd1351_set_sleep(app->oled, false);
+  app->view_active = true;
+  app->view_deadline = make_timeout_time_ms(BACKPACK_VIEW_MS);
+}
+
+static void hide_backpack_view(app_t *app) {
+  ssd1351_set_sleep(app->oled, true);
+  app->view_active = false;
 }
 
 static void enter_backpack_mode(app_t *app) {
   if (app->time_invalid) {
-    set_status(app, "Set time via GPS", UI_COLOR_RED);
-  } else if (restart_backpack_alarm(app->ds3231)) {
-    app->mode = MODE_BACKPACK;
-    app->sync_pending = false;
-    display_backpack_screen(app->oled, app->ds3231);
-  } else {
-    show_error(app, "RTC alarm error");
+    set_status(app, "Sync time first", UI_COLOR_RED);
+    return;
   }
+  if (!app->schedule_valid && !schedule_from_now(app)) {
+    show_error(app, "RTC alarm error");
+    return;
+  }
+  gps_commands_finish(app);
+  app->mode = MODE_BACKPACK;
+  app->sync_pending = false;
+  show_backpack_view(app);
 }
 
 static void leave_backpack_mode(app_t *app) {
   app->mode = MODE_MANUAL;
+  app->view_active = false;
+  ssd1351_set_contrast(app->oled, OLED_CONTRAST_MANUAL);
+  ssd1351_set_sleep(app->oled, false);
+  apply_shift(app);
+  app->shift_at = make_timeout_time_ms(BURN_IN_SHIFT_MS);
   app->clear_screen = true;
+  app->shown_second_valid = false;
   buttons_take_events();
 }
+
+static void abort_backpack_mode(app_t *app, const char *message) {
+  leave_backpack_mode(app);
+  show_error(app, message);
+}
+
+static uint32_t wait_while_view_active(app_t *app) {
+  while (!buttons_has_events() && !rtc_alarm_pending() &&
+         !best_effort_wfe_or_timeout(app->view_deadline)) {
+    gps_service(app);
+  }
+  if (time_reached(app->view_deadline)) {
+    hide_backpack_view(app);
+  }
+  return buttons_take_events();
+}
+
+static uint32_t sleep_until_event(app_t *app) {
+  uint8_t ok_pin = buttons_pin(BUTTON_OK);
+  uint8_t back_pin = buttons_pin(BUTTON_BACK);
+  uint32_t wake = power_dormant_until(
+      RTC_INT_PIN, POWER_PIN_MASK(ok_pin) | POWER_PIN_MASK(back_pin));
+  neo6m_port_hw_init();
+
+  uint32_t events = 0;
+  if (wake & POWER_PIN_MASK(ok_pin)) {
+    buttons_wait_release(BUTTON_OK);
+    events |= BUTTON_MASK(BUTTON_OK);
+  }
+  if (wake & POWER_PIN_MASK(back_pin)) {
+    buttons_wait_release(BUTTON_BACK);
+    events |= BUTTON_MASK(BUTTON_BACK);
+  }
+  return events;
+}
+
+static void run_backpack_cycle(app_t *app) {
+  uint32_t events =
+      app->view_active ? wait_while_view_active(app) : sleep_until_event(app);
+
+  if (rtc_alarm_pending() && !handle_sample_alarm(app)) {
+    abort_backpack_mode(app, "RTC error");
+    return;
+  }
+  if (events & (BUTTON_MASK(BUTTON_BACK) | BUTTON_LONG_MASK(BUTTON_BACK))) {
+    leave_backpack_mode(app);
+    return;
+  }
+  if (events & BUTTON_MASK(BUTTON_OK)) {
+    show_backpack_view(app);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Manual mode buttons
+// ---------------------------------------------------------------------------
 
 static void handle_back(app_t *app) {
   if (app->card != CARD_ENVIRONMENT) {
@@ -561,7 +897,7 @@ static void handle_back(app_t *app) {
 
 static void handle_ok(app_t *app) {
   switch (app->card) {
-  case CARD_GPS:
+  case CARD_SATELLITES:
     toggle_auto_sync(app);
     break;
   case CARD_BACKPACK:
@@ -596,37 +932,42 @@ static void handle_manual_buttons(app_t *app, uint32_t pressed) {
   }
 }
 
-static void run_backpack_cycle(app_t *app) {
-  uint32_t wake =
-      power_dormant_until_pins(RTC_INT_PIN, buttons_pin(BUTTON_BACK));
-  neo6m_port_hw_init();
-#ifdef WAKE_DEBUG
-  display_wake_debug(app->oled, wake);
-#endif
-
-  bool alarm_triggered = false;
-  if (ds3231_is_alarm1_triggered(app->ds3231, &alarm_triggered) != DS3231_OK) {
-    leave_backpack_mode(app);
-    show_error(app, "RTC read error");
+static void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
+  gps_service(app);
+  gps_commands_service(app);
+  check_time_sync_timeout(app);
+  if (rtc_alarm_pending() && !handle_sample_alarm(app)) {
+    show_error(app, "RTC error");
+  }
+  handle_manual_buttons(app, buttons_take_events());
+  if (app->mode != MODE_MANUAL) {
     return;
   }
+  update_shift(app);
 
-  if (alarm_triggered) {
-    take_sample(app->sht40, app->bme680, app->ds3231);
-    ds3231_datetime_t current_time;
-    if (ds3231_read_datetime(app->ds3231, &current_time) == DS3231_OK) {
-      display_backpack_clock(app->oled, &current_time);
+  bool scheduled = time_reached(*next_refresh);
+  if (app->clear_screen || app->refresh_now || scheduled) {
+    app->refresh_now = false;
+    draw_current_card(app, scheduled);
+  }
+  if (scheduled) {
+    // Fixed cadence: the next tick does not depend on how long drawing took.
+    *next_refresh = delayed_by_ms(*next_refresh, MANUAL_REFRESH_MS);
+    if (app->refresh_resync) {
+      *next_refresh = delayed_by_ms(*next_refresh, REFRESH_PHASE_SHIFT_MS);
+      app->refresh_resync = false;
     }
-    if (!restart_backpack_alarm(app->ds3231)) {
-      leave_backpack_mode(app);
-      show_error(app, "RTC alarm error");
-      return;
+    if (time_reached(*next_refresh)) {
+      // Fell behind (e.g. a long SD write): restart the cadence.
+      *next_refresh = make_timeout_time_ms(MANUAL_REFRESH_MS);
+      app->shown_second_valid = false;
     }
   }
 
-  if (wake & POWER_WAKE_BUTTON) {
-    buttons_wait_release(BUTTON_BACK);
-    leave_backpack_mode(app);
+  while (!buttons_has_events() && !app->refresh_now && !rtc_alarm_pending() &&
+         !best_effort_wfe_or_timeout(*next_refresh)) {
+    gps_service(app);
+    gps_commands_service(app);
   }
 }
 
@@ -645,6 +986,9 @@ int main() {
   gpio_init(RTC_INT_PIN);
   gpio_set_dir(RTC_INT_PIN, GPIO_IN);
   gpio_pull_up(RTC_INT_PIN);
+  // Wakes the manual-mode WFE when an alarm fires; the shared GPIO callback
+  // (buttons) ignores this pin.
+  gpio_set_irq_enabled(RTC_INT_PIN, GPIO_IRQ_EDGE_FALL, true);
 
   bme680_t *bme680 = bme680_create(I2C_PORT, BME680_I2C_ADDRESS,
                                    bme680_port_i2c_read, bme680_port_i2c_write);
@@ -686,7 +1030,11 @@ int main() {
   ssd1351_t *oled = ssd1351_get_instance();
   ssd1351_init(oled, &io);
   ssd1351_set_rotation(oled, SSD1351_ROT_0);
+  ssd1351_set_contrast(oled, OLED_CONTRAST_MANUAL);
   ssd1351_fill(oled, 0x0000);
+
+  // Shares SPI0 with the OLED, so it is initialised after it.
+  sd_log_init();
 
   neo6m_port_hw_init();
   neo6m_t *gps =
@@ -734,27 +1082,16 @@ int main() {
   app.gps_enabled = true;
   app.gps_toggled_at = get_absolute_time();
   app.auto_sync = GPS_AUTO_SYNC_DEFAULT;
+  app.shift_at = make_timeout_time_ms(BURN_IN_SHIFT_MS);
+  gps_request(&app, GPS_CMD_CONFIGURE);
+  if (!schedule_from_now(&app)) {
+    show_error(&app, "RTC alarm error");
+  }
 
   absolute_time_t next_refresh = get_absolute_time();
   while (true) {
     if (app.mode == MODE_MANUAL) {
-      gps_service(&app);
-      check_time_sync_timeout(&app);
-      handle_manual_buttons(&app, buttons_take_events());
-      if (app.mode != MODE_MANUAL) {
-        continue;
-      }
-
-      if (app.clear_screen || app.refresh_now || time_reached(next_refresh)) {
-        app.refresh_now = false;
-        draw_current_card(&app);
-        next_refresh = make_timeout_time_ms(MANUAL_REFRESH_MS);
-      }
-
-      while (!buttons_has_events() && !app.refresh_now &&
-             !best_effort_wfe_or_timeout(next_refresh)) {
-        gps_service(&app);
-      }
+      run_manual_cycle(&app, &next_refresh);
     } else {
       run_backpack_cycle(&app);
     }

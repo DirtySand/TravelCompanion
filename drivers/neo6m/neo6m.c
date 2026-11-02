@@ -50,6 +50,17 @@
 #define UBX_ID_RXM_PMREQ 0x41
 #define UBX_PMREQ_DURATION_INFINITE 0u
 #define UBX_PMREQ_FLAG_BACKUP 0x02u
+#define UBX_CLASS_CFG 0x06
+#define UBX_ID_CFG_MSG 0x01
+#define UBX_ID_CFG_RXM 0x11
+#define UBX_ID_CFG_SBAS 0x16
+#define UBX_CFG_RXM_RESERVED1 8u
+#define UBX_CFG_RXM_LP_POWER_SAVE 1u
+#define UBX_CFG_SBAS_PAYLOAD 8
+#define NMEA_CLASS 0xF0
+#define NMEA_ID_GLL 0x01
+#define NMEA_ID_GSA 0x02
+#define NMEA_ID_VTG 0x05
 #define NEO6M_WAKE_BYTES 8
 #define NEO6M_WAKE_PATTERN 0xFF
 
@@ -530,13 +541,46 @@ neo6m_status_t neo6m_power_off(neo6m_t *dev) {
                   sizeof(payload));
 }
 
-neo6m_status_t neo6m_power_on(neo6m_t *dev) {
+neo6m_status_t neo6m_wake(neo6m_t *dev) {
   if (dev == NULL) {
     return NEO6M_NULL_PTR;
   }
   uint8_t wake[NEO6M_WAKE_BYTES];
   memset(wake, NEO6M_WAKE_PATTERN, sizeof(wake));
   return uart_write_all(dev, wake, sizeof(wake));
+}
+
+neo6m_status_t neo6m_power_on(neo6m_t *dev) { return neo6m_wake(dev); }
+
+static neo6m_status_t set_nmea_rate(neo6m_t *dev, uint8_t message_id,
+                                    uint8_t rate) {
+  const uint8_t payload[3] = {NMEA_CLASS, message_id, rate};
+  return ubx_send(dev, UBX_CLASS_CFG, UBX_ID_CFG_MSG, payload,
+                  sizeof(payload));
+}
+
+neo6m_status_t neo6m_configure_power_save(neo6m_t *dev) {
+  if (dev == NULL) {
+    return NEO6M_NULL_PTR;
+  }
+  static const uint8_t rxm[2] = {UBX_CFG_RXM_RESERVED1,
+                                 UBX_CFG_RXM_LP_POWER_SAVE};
+  static const uint8_t sbas_off[UBX_CFG_SBAS_PAYLOAD] = {0};
+  neo6m_status_t status = ubx_send(dev, UBX_CLASS_CFG, UBX_ID_CFG_SBAS,
+                                   sbas_off, sizeof(sbas_off));
+  if (status == NEO6M_OK) {
+    status = set_nmea_rate(dev, NMEA_ID_GLL, 0);
+  }
+  if (status == NEO6M_OK) {
+    status = set_nmea_rate(dev, NMEA_ID_GSA, 0);
+  }
+  if (status == NEO6M_OK) {
+    status = set_nmea_rate(dev, NMEA_ID_VTG, 0);
+  }
+  if (status == NEO6M_OK) {
+    status = ubx_send(dev, UBX_CLASS_CFG, UBX_ID_CFG_RXM, rxm, sizeof(rxm));
+  }
+  return status;
 }
 
 neo6m_status_t neo6m_poll_time_info(neo6m_t *dev) {
