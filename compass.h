@@ -43,6 +43,11 @@ typedef struct {
 
 bool compass_axes_valid(const compass_axes_t *axes);
 uint8_t compass_axis_index(int8_t code);
+bool compass_axes_right_handed(const compass_axes_t *axes);
+void compass_to_device(const compass_axes_t *axes, const compass_vec_t *sensor,
+                       compass_vec_t *device);
+void compass_tilt(const compass_vec_t *accel_device, float *pitch_deg,
+                  float *roll_deg);
 
 void compass_cal_begin(compass_cal_session_t *session);
 

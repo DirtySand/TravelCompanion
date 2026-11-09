@@ -1,6 +1,7 @@
 
 build/
 scripts/
+tools/
 
 build-*/
 cmake-build-*/

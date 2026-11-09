@@ -6,6 +6,8 @@
 #include "drivers/bme680/bme680.h"
 #include "drivers/ds3231/ds3231.h"
 #include "drivers/ds3231/ds3231_config.h"
+#include "drivers/icm20649/icm20649.h"
+#include "drivers/icm20649/icm20649_port.h"
 #include "drivers/neo6m/neo6m.h"
 #include "drivers/neo6m/neo6m_port.h"
 #include "drivers/qmc5883l/qmc5883l.h"
@@ -21,6 +23,7 @@
 #include "time_sync.h"
 #include "timezone.h"
 #include "ui.h"
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -48,6 +51,14 @@
 #define COMPASS_FILTER_RESET_MS 1000
 #define COMPASS_CAL_MIN_RANGE_UT 30.0f
 #define COMPASS_MIN_HORIZONTAL_UT 2.0f
+#define IMU_REFRESH_MS 200
+#define IMU_FILTER_ALPHA 0.4f
+#define IMU_FILTER_RESET_MS 1000
+#define IMU_ACCEL_RATE_DIV 21
+#define IMU_GYRO_RATE_DIV 21
+#define IMU_DLPF_CFG 4
+#define IMU_FIFO_PROBE false
+#define IMU_FIFO_PROBE_MS 1000
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
 #define BUTTON_NEXT_CARD BUTTON_BOTTOM_RIGHT
@@ -75,6 +86,7 @@ typedef enum {
   CARD_POSITION,
   CARD_SATELLITES,
   CARD_COMPASS,
+  CARD_IMU,
   CARD_BACKPACK,
   CARD_COUNT,
 } card_t;
@@ -82,7 +94,7 @@ typedef enum {
 static const char *const card_titles[CARD_COUNT] = {
     [CARD_ENVIRONMENT] = "ENV", [CARD_POSITION] = "POS",
     [CARD_SATELLITES] = "SAT",  [CARD_COMPASS] = "CMP",
-    [CARD_BACKPACK] = "PACK",
+    [CARD_IMU] = "IMU",         [CARD_BACKPACK] = "PACK",
 };
 
 typedef enum {
@@ -104,6 +116,7 @@ typedef struct {
   ds3231_t *ds3231;
   neo6m_t *gps;
   qmc5883l_t *mag;
+  icm20649_t *imu;
   app_mode_t mode;
   card_t card;
   bool time_invalid;
@@ -145,7 +158,15 @@ typedef struct {
   compass_cal_t mag_cal;
   bool mag_calibrating;
   compass_cal_session_t mag_session;
-  absolute_time_t compass_refresh_at;
+  bool imu_ok;
+  bool imu_error;
+  bool imu_received;
+  bool imu_filter_valid;
+  absolute_time_t imu_sampled_at;
+  compass_vec_t imu_accel_g;
+  compass_vec_t imu_gyro_dps;
+  float imu_temp_c;
+  absolute_time_t fast_refresh_at;
 } app_t;
 
 static app_t app;
@@ -154,6 +175,12 @@ static const compass_axes_t mag_axes = {
     .forward = MAG_AXIS_FORWARD,
     .right = MAG_AXIS_RIGHT,
     .down = MAG_AXIS_DOWN,
+};
+
+static const compass_axes_t imu_axes = {
+    .forward = IMU_AXIS_FORWARD,
+    .right = IMU_AXIS_RIGHT,
+    .down = IMU_AXIS_DOWN,
 };
 
 static void set_status(app_t *app, const char *text, uint16_t color) {
@@ -594,6 +621,9 @@ static bool mag_init(app_t *app) {
     printf("MAG_AXIS_* in board_config.h must use X, Y and Z once each\n");
     return false;
   }
+  if (!compass_axes_right_handed(&mag_axes)) {
+    printf("MAG_AXIS_* in board_config.h are mirrored: one sign is wrong\n");
+  }
   app->mag =
       qmc5883l_create(I2C_PORT, QMC5883L_I2C_ADDRESS, qmc5883l_port_i2c_read,
                       qmc5883l_port_i2c_write, qmc5883l_port_delay_ms);
@@ -764,8 +794,166 @@ static void draw_compass_card(app_t *app) {
   ui_compass_t compass = {0};
   collect_compass(app, &compass);
   ui_draw_compass_card(app->oled, &compass);
-  app->compass_refresh_at = make_timeout_time_ms(
-      app->mag_calibrating ? COMPASS_CAL_REFRESH_MS : COMPASS_REFRESH_MS);
+}
+
+// ---------------------------------------------------------------------------
+// IMU
+// ---------------------------------------------------------------------------
+
+static void imu_probe_fifo(app_t *app) {
+  uint16_t count = 0;
+  bool overflow = false;
+  icm20649_status_t status = icm20649_set_rate_dividers(app->imu, 0, 0);
+  if (status == ICM20649_OK) {
+    status = icm20649_fifo_start(app->imu, ICM20649_FIFO_ACCEL, true);
+  }
+  if (status == ICM20649_OK) {
+    sleep_ms(IMU_FIFO_PROBE_MS);
+    status = icm20649_fifo_count(app->imu, &count);
+  }
+  if (status == ICM20649_OK) {
+    status = icm20649_fifo_overflowed(app->imu, &overflow);
+  }
+  icm20649_fifo_stop(app->imu);
+  icm20649_set_rate_dividers(app->imu, IMU_ACCEL_RATE_DIV, IMU_GYRO_RATE_DIV);
+  if (status != ICM20649_OK) {
+    printf("ICM-20649 FIFO probe failed: %d\n", status);
+    return;
+  }
+  printf("ICM-20649 FIFO probe: %u bytes after %u ms at ~1.1 kHz, "
+         "overflow flag %d\n",
+         (unsigned)count, (unsigned)IMU_FIFO_PROBE_MS, (int)overflow);
+}
+
+static bool imu_init(app_t *app) {
+  if (!compass_axes_valid(&imu_axes)) {
+    printf("IMU_AXIS_* in board_config.h must use X, Y and Z once each\n");
+    return false;
+  }
+  if (!compass_axes_right_handed(&imu_axes)) {
+    printf("IMU_AXIS_* in board_config.h are mirrored: one sign is wrong\n");
+  }
+  app->imu =
+      icm20649_create(I2C_PORT, ICM20649_I2C_ADDRESS, icm20649_port_i2c_read,
+                      icm20649_port_i2c_write, icm20649_port_delay_ms);
+  if (app->imu == NULL) {
+    printf("Failed to create ICM-20649 instance\n");
+    return false;
+  }
+  const icm20649_config_t config = {
+      .accel_range = ICM20649_ACCEL_4G,
+      .accel_rate_div = IMU_ACCEL_RATE_DIV,
+      .accel_dlpf = IMU_DLPF_CFG,
+      .gyro_range = ICM20649_GYRO_500DPS,
+      .gyro_rate_div = IMU_GYRO_RATE_DIV,
+      .gyro_dlpf = IMU_DLPF_CFG,
+  };
+  icm20649_status_t status = icm20649_init(app->imu, &config);
+  if (status == ICM20649_WRONG_CHIP_ID) {
+    uint8_t chip_id = 0;
+    icm20649_read_chip_id(app->imu, &chip_id);
+    printf("ICM-20649 wrong chip ID: 0x%02X (expected 0x%02X)\n", chip_id,
+           ICM20649_CHIP_ID);
+    return false;
+  }
+  if (status != ICM20649_OK) {
+    printf("ICM-20649 init failed: %d\n", status);
+    return false;
+  }
+  printf("ICM-20649 ready\n");
+  if (IMU_FIFO_PROBE) {
+    imu_probe_fifo(app);
+  }
+  return true;
+}
+
+static void imu_set_running(app_t *app, bool running) {
+  if (!app->imu_ok) {
+    return;
+  }
+  if (icm20649_set_sleep(app->imu, !running) != ICM20649_OK) {
+    printf("ICM-20649 sleep change failed\n");
+    app->imu_error = true;
+  }
+  app->imu_filter_valid = false;
+}
+
+static void imu_update(app_t *app) {
+  if (!app->imu_ok) {
+    return;
+  }
+  icm20649_raw_t raw;
+  icm20649_status_t status = icm20649_read_raw(app->imu, &raw);
+  if (status != ICM20649_OK) {
+    if (!app->imu_error) {
+      printf("ICM-20649 read failed: %d\n", status);
+    }
+    app->imu_error = true;
+    return;
+  }
+  app->imu_error = false;
+  app->imu_received = true;
+
+  float lsb_per_g = icm20649_accel_lsb_per_g(app->imu);
+  float lsb_per_dps = icm20649_gyro_lsb_per_dps(app->imu);
+  compass_vec_t accel = {
+      .x = (float)raw.accel[0] / lsb_per_g,
+      .y = (float)raw.accel[1] / lsb_per_g,
+      .z = (float)raw.accel[2] / lsb_per_g,
+  };
+  app->imu_gyro_dps = (compass_vec_t){
+      .x = (float)raw.gyro[0] / lsb_per_dps,
+      .y = (float)raw.gyro[1] / lsb_per_dps,
+      .z = (float)raw.gyro[2] / lsb_per_dps,
+  };
+  app->imu_temp_c = icm20649_temperature_c(raw.temperature);
+  if (!app->imu_filter_valid ||
+      ms_since(app->imu_sampled_at) > IMU_FILTER_RESET_MS) {
+    app->imu_accel_g = accel;
+    app->imu_filter_valid = true;
+  } else {
+    compass_filter(&app->imu_accel_g, &accel, IMU_FILTER_ALPHA);
+  }
+  app->imu_sampled_at = get_absolute_time();
+}
+
+static void collect_imu(const app_t *app, ui_imu_t *imu) {
+  imu->sensor_ok = app->imu_ok && !app->imu_error;
+  imu->data_valid = app->imu_received && app->imu_filter_valid;
+  imu->axes_ok = compass_axes_right_handed(&imu_axes);
+  const compass_vec_t *a = &app->imu_accel_g;
+  const compass_vec_t *g = &app->imu_gyro_dps;
+  imu->accel_g[0] = a->x;
+  imu->accel_g[1] = a->y;
+  imu->accel_g[2] = a->z;
+  imu->accel_norm_g = sqrtf(a->x * a->x + a->y * a->y + a->z * a->z);
+  imu->gyro_dps[0] = g->x;
+  imu->gyro_dps[1] = g->y;
+  imu->gyro_dps[2] = g->z;
+  imu->chip_temp_c = app->imu_temp_c;
+  if (imu->axes_ok) {
+    compass_vec_t device;
+    compass_to_device(&imu_axes, a, &device);
+    compass_tilt(&device, &imu->pitch_deg, &imu->roll_deg);
+  }
+}
+
+static void draw_imu_card(app_t *app) {
+  imu_update(app);
+  ui_imu_t imu = {0};
+  collect_imu(app, &imu);
+  ui_draw_imu_card(app->oled, &imu);
+}
+
+static uint32_t fast_refresh_ms(const app_t *app) {
+  switch (app->card) {
+  case CARD_COMPASS:
+    return app->mag_calibrating ? COMPASS_CAL_REFRESH_MS : COMPASS_REFRESH_MS;
+  case CARD_IMU:
+    return IMU_REFRESH_MS;
+  default:
+    return 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -948,6 +1136,9 @@ static void draw_current_card(app_t *app, bool scheduled) {
   case CARD_COMPASS:
     draw_compass_card(app);
     break;
+  case CARD_IMU:
+    draw_imu_card(app);
+    break;
   case CARD_BACKPACK:
     ui_draw_backpack_card(app->oled, !app->time_invalid,
                           SAMPLE_INTERVAL_SECONDS);
@@ -963,6 +1154,10 @@ static void draw_current_card(app_t *app, bool scheduled) {
     ui_draw_status(app->oled, hint, color);
   }
   draw_footer(app);
+  uint32_t fast_ms = fast_refresh_ms(app);
+  if (fast_ms != 0) {
+    app->fast_refresh_at = make_timeout_time_ms(fast_ms);
+  }
 }
 
 static void apply_shift(const app_t *app) {
@@ -1015,6 +1210,7 @@ static void enter_backpack_mode(app_t *app) {
   }
   gps_commands_finish(app);
   mag_set_running(app, false);
+  imu_set_running(app, false);
   app->mode = MODE_BACKPACK;
   app->sync_pending = false;
   show_backpack_view(app);
@@ -1023,6 +1219,7 @@ static void enter_backpack_mode(app_t *app) {
 static void leave_backpack_mode(app_t *app) {
   app->mode = MODE_MANUAL;
   mag_set_running(app, true);
+  imu_set_running(app, true);
   app->view_active = false;
   ssd1351_set_contrast(app->oled, OLED_CONTRAST_MANUAL);
   ssd1351_set_sleep(app->oled, false);
@@ -1161,9 +1358,9 @@ static void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
   update_shift(app);
 
   bool scheduled = time_reached(*next_refresh);
-  bool compass_due =
-      app->card == CARD_COMPASS && time_reached(app->compass_refresh_at);
-  if (app->clear_screen || app->refresh_now || scheduled || compass_due) {
+  bool fast_due =
+      fast_refresh_ms(app) != 0 && time_reached(app->fast_refresh_at);
+  if (app->clear_screen || app->refresh_now || scheduled || fast_due) {
     app->refresh_now = false;
     draw_current_card(app, scheduled);
   }
@@ -1180,9 +1377,9 @@ static void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
   }
 
   absolute_time_t wake_at = *next_refresh;
-  if (app->card == CARD_COMPASS &&
-      absolute_time_diff_us(app->compass_refresh_at, wake_at) > 0) {
-    wake_at = app->compass_refresh_at;
+  if (fast_refresh_ms(app) != 0 &&
+      absolute_time_diff_us(app->fast_refresh_at, wake_at) > 0) {
+    wake_at = app->fast_refresh_at;
   }
   while (!buttons_has_events() && !app->refresh_now && !rtc_alarm_pending() &&
          !best_effort_wfe_or_timeout(wake_at)) {
@@ -1307,6 +1504,7 @@ int main() {
       .scale = {MAG_CAL_SCALE_X, MAG_CAL_SCALE_Y, MAG_CAL_SCALE_Z},
   };
   app.mag_ok = mag_init(&app);
+  app.imu_ok = imu_init(&app);
   gps_request(&app, GPS_CMD_CONFIGURE);
   if (!schedule_from_now(&app)) {
     show_error(&app, "RTC alarm error");
