@@ -1,5 +1,6 @@
 #include "board_config.h"
 #include "buttons.h"
+#include "compass.h"
 #include "datetime_utils.h"
 #include "drivers/SSD1351U3/ssd1351.h"
 #include "drivers/bme680/bme680.h"
@@ -7,6 +8,8 @@
 #include "drivers/ds3231/ds3231_config.h"
 #include "drivers/neo6m/neo6m.h"
 #include "drivers/neo6m/neo6m_port.h"
+#include "drivers/qmc5883l/qmc5883l.h"
+#include "drivers/qmc5883l/qmc5883l_port.h"
 #include "drivers/sht40/sht40.h"
 #include "drivers/sht40/sht40_port.h"
 #include "hardware/clocks.h"
@@ -23,21 +26,15 @@
 #include <sys/types.h>
 
 #define MANUAL_REFRESH_MS 1000
-// Moves the refresh phase into the middle of the RTC second when the shown
-// seconds stop advancing by exactly one.
 #define REFRESH_PHASE_SHIFT_MS 500
 #define SECONDS_PER_MINUTE 60u
 #define GPS_STALE_MS 3000
-// Power Save Mode: without a fix the receiver may stay silent for up to the
-// search period (10 s) - only report a timeout after a longer silence.
 #define GPS_IDLE_MS 15000
 #define STATUS_MESSAGE_MS 4000
 #define GPS_SYNC_TIMEOUT_MS 2500
 #define GPS_OFF_GRACE_MS 3000
 #define GPS_START_TIMEOUT_MS 5000
-// u-blox 6 Receiver Description 9.3.3.1: 0xFF, ~0.5 s, then the command.
 #define GPS_WAKE_DELAY_MS 500
-// Backpack sample: wait for the next RMC, then for the GGA of that epoch.
 #define GPS_SAMPLE_RMC_MS 1200
 #define GPS_SAMPLE_GGA_MS 400
 #define TIME_INFO_POLL_MS 30000
@@ -45,6 +42,12 @@
 #define BURN_IN_STEP_PX 2
 #define BACKPACK_VIEW_MS 2000
 #define GPS_AUTO_SYNC_DEFAULT false
+#define COMPASS_REFRESH_MS 200
+#define COMPASS_CAL_REFRESH_MS 100
+#define COMPASS_FILTER_ALPHA 0.4f
+#define COMPASS_FILTER_RESET_MS 1000
+#define COMPASS_CAL_MIN_RANGE_UT 30.0f
+#define COMPASS_MIN_HORIZONTAL_UT 2.0f
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
 #define BUTTON_NEXT_CARD BUTTON_BOTTOM_RIGHT
@@ -71,14 +74,14 @@ typedef enum {
   CARD_ENVIRONMENT,
   CARD_POSITION,
   CARD_SATELLITES,
+  CARD_COMPASS,
   CARD_BACKPACK,
   CARD_COUNT,
 } card_t;
 
 static const char *const card_titles[CARD_COUNT] = {
-    [CARD_ENVIRONMENT] = "ENV",
-    [CARD_POSITION] = "POS",
-    [CARD_SATELLITES] = "SAT",
+    [CARD_ENVIRONMENT] = "ENV", [CARD_POSITION] = "POS",
+    [CARD_SATELLITES] = "SAT",  [CARD_COMPASS] = "CMP",
     [CARD_BACKPACK] = "PACK",
 };
 
@@ -100,6 +103,7 @@ typedef struct {
   sht40_t *sht40;
   ds3231_t *ds3231;
   neo6m_t *gps;
+  qmc5883l_t *mag;
   app_mode_t mode;
   card_t card;
   bool time_invalid;
@@ -131,9 +135,26 @@ typedef struct {
   uint8_t shown_second;
   bool refresh_resync;
   status_message_t status;
+  bool mag_ok;
+  bool mag_error;
+  bool mag_received;
+  bool mag_overflow;
+  bool mag_filter_valid;
+  absolute_time_t mag_sampled_at;
+  compass_vec_t mag_field;
+  compass_cal_t mag_cal;
+  bool mag_calibrating;
+  compass_cal_session_t mag_session;
+  absolute_time_t compass_refresh_at;
 } app_t;
 
 static app_t app;
+
+static const compass_axes_t mag_axes = {
+    .forward = MAG_AXIS_FORWARD,
+    .right = MAG_AXIS_RIGHT,
+    .down = MAG_AXIS_DOWN,
+};
 
 static void set_status(app_t *app, const char *text, uint16_t color) {
   snprintf(app->status.text, sizeof(app->status.text), "%s", text);
@@ -163,9 +184,6 @@ static uint32_t to_seconds(const ds3231_datetime_t *datetime) {
   return datetime_to_seconds(datetime, CENTURY_BASE);
 }
 
-// Arms alarm 1 for app->next_sample, moving it forward until it is still in
-// the future after the write: an alarm written for a second that has
-// already started would only match again a month later.
 static bool arm_sample_alarm(app_t *app, bool advance_first) {
   ds3231_datetime_t now;
   if (ds3231_read_datetime(app->ds3231, &now) != DS3231_OK) {
@@ -194,7 +212,6 @@ static bool arm_sample_alarm(app_t *app, bool advance_first) {
   }
 }
 
-// Starts the schedule on the interval grid (e.g. :00, :10, :20 ...).
 static bool schedule_from_now(app_t *app) {
   ds3231_datetime_t now;
   if (ds3231_read_datetime(app->ds3231, &now) != DS3231_OK) {
@@ -236,8 +253,6 @@ static bool gps_utc_seconds(const neo6m_data_t *data, uint32_t *seconds) {
   return true;
 }
 
-// Commands to a receiver in Power Save Mode: wake it with 0xFF, wait ~0.5 s,
-// then send everything queued (u-blox 6 Receiver Description 9.3.3.1).
 static void gps_request(app_t *app, gps_command_t command) {
   if (command == GPS_CMD_POWER_OFF) {
     app->gps_commands &= ~(uint32_t)(GPS_CMD_CONFIGURE | GPS_CMD_POLL_TIME);
@@ -280,7 +295,6 @@ static void gps_commands_service(app_t *app) {
   }
 }
 
-// Used before going dormant: nothing may stay queued.
 static void gps_commands_finish(app_t *app) {
   if (app->gps_commands == 0) {
     return;
@@ -334,7 +348,6 @@ static void finish_time_sync(app_t *app) {
            data.hours, data.minutes, data.seconds, data.day, data.month,
            CENTURY_BASE + data.year);
     set_status(app, "Time synced", UI_COLOR_GREEN);
-    // The RTC may have jumped: restart the sample schedule from the new time.
     if (!schedule_from_now(app)) {
       show_error(app, "RTC alarm error");
     }
@@ -429,7 +442,6 @@ static void gps_store_fix(app_t *app) {
   app->gps_fix_utc_valid = gps_utc_seconds(&data, &app->gps_fix_utc_s);
 }
 
-// Returns the NEO6M_UPDATED_* flags of this call.
 static uint32_t gps_service(app_t *app) {
   uint32_t updated = NEO6M_UPDATED_NONE;
   if (neo6m_process(app->gps, &updated) != NEO6M_OK) {
@@ -461,9 +473,6 @@ static uint32_t gps_service(app_t *app) {
   return updated;
 }
 
-// After a dormant period the system timer has not advanced, so "fresh" is
-// meaningless: wait for an RMC (and the GGA of the same epoch) that really
-// arrived after the wake-up. Returns true if an RMC was received.
 static bool gps_wait_for_epoch(app_t *app) {
   if (!app->gps_enabled) {
     return false;
@@ -499,8 +508,8 @@ static bool read_climate(sht40_t *sht40, float *temperature, float *humidity) {
 
 static bool read_pressure(bme680_t *bme680, float *pressure) {
   float temperature, humidity;
-  bme680_status_t status = bme680_read_measurement_forced(
-      bme680, &temperature, pressure, &humidity);
+  bme680_status_t status =
+      bme680_read_measurement_forced(bme680, &temperature, pressure, &humidity);
   if (status != BME680_OK) {
     printf("BME680 measurement failed: %d\n", status);
     return false;
@@ -541,8 +550,8 @@ static void take_sample(app_t *app, const ds3231_datetime_t *scheduled) {
   sample_t s = {0};
   s.utc = *scheduled;
   s.time_valid = !app->time_invalid;
-  s.mode = (app->mode == MODE_BACKPACK) ? SAMPLE_MODE_BACKPACK
-                                        : SAMPLE_MODE_MANUAL;
+  s.mode =
+      (app->mode == MODE_BACKPACK) ? SAMPLE_MODE_BACKPACK : SAMPLE_MODE_MANUAL;
   bool gps_data = (app->mode == MODE_BACKPACK) ? gps_wait_for_epoch(app)
                                                : gps_is_fresh(app);
   s.climate_valid = read_climate(app->sht40, &s.temperature_c, &s.humidity_pct);
@@ -558,7 +567,6 @@ static void take_sample(app_t *app, const ds3231_datetime_t *scheduled) {
   sd_log_append(line, length, &s.utc, s.time_valid, to_seconds(&s.utc));
 }
 
-// Returns false on an RTC error.
 static bool handle_sample_alarm(app_t *app) {
   bool triggered = false;
   if (ds3231_is_alarm1_triggered(app->ds3231, &triggered) != DS3231_OK) {
@@ -568,7 +576,6 @@ static bool handle_sample_alarm(app_t *app) {
     return true;
   }
   ds3231_datetime_t scheduled = app->next_sample;
-  // Clear A1F and arm the next alarm before measuring (INT released early).
   if (!arm_sample_alarm(app, true)) {
     return false;
   }
@@ -579,11 +586,192 @@ static bool handle_sample_alarm(app_t *app) {
 static bool rtc_alarm_pending(void) { return !gpio_get(RTC_INT_PIN); }
 
 // ---------------------------------------------------------------------------
+// Magnetometer / compass
+// ---------------------------------------------------------------------------
+
+static bool mag_init(app_t *app) {
+  if (!compass_axes_valid(&mag_axes)) {
+    printf("MAG_AXIS_* in board_config.h must use X, Y and Z once each\n");
+    return false;
+  }
+  app->mag =
+      qmc5883l_create(I2C_PORT, QMC5883L_I2C_ADDRESS, qmc5883l_port_i2c_read,
+                      qmc5883l_port_i2c_write, qmc5883l_port_delay_ms);
+  if (app->mag == NULL) {
+    printf("Failed to create QMC5883L instance\n");
+    return false;
+  }
+  uint8_t chip_id = 0;
+  if (qmc5883l_read_chip_id(app->mag, &chip_id) != QMC5883L_OK) {
+    printf("QMC5883L not responding\n");
+    return false;
+  }
+  printf("QMC5883L chip ID: 0x%02X%s\n", chip_id,
+         (chip_id == QMC5883L_CHIP_ID) ? "" : " (expected 0xFF)");
+  const qmc5883l_config_t config = {
+      .odr = QMC5883L_ODR_50HZ,
+      .range = QMC5883L_RANGE_2G,
+      .osr = QMC5883L_OSR_512,
+  };
+  if (qmc5883l_init(app->mag, &config) != QMC5883L_OK ||
+      qmc5883l_start(app->mag) != QMC5883L_OK) {
+    printf("QMC5883L init failed\n");
+    return false;
+  }
+  return true;
+}
+
+static void mag_set_running(app_t *app, bool running) {
+  if (!app->mag_ok) {
+    return;
+  }
+  qmc5883l_status_t status =
+      running ? qmc5883l_start(app->mag) : qmc5883l_standby(app->mag);
+  if (status != QMC5883L_OK) {
+    printf("QMC5883L mode change failed: %d\n", status);
+    app->mag_error = true;
+  }
+  app->mag_filter_valid = false;
+}
+
+static void mag_update(app_t *app) {
+  if (!app->mag_ok) {
+    return;
+  }
+  qmc5883l_raw_t raw;
+  qmc5883l_status_t status = qmc5883l_read_raw(app->mag, &raw);
+  if (status == QMC5883L_NOT_READY) {
+    return;
+  }
+  if (status == QMC5883L_I2C_ERROR || status == QMC5883L_NULL_PTR) {
+    if (!app->mag_error) {
+      printf("QMC5883L read failed: %d\n", status);
+    }
+    app->mag_error = true;
+    return;
+  }
+  app->mag_error = false;
+  app->mag_received = true;
+  app->mag_overflow = (status == QMC5883L_OVERFLOW);
+  if (app->mag_overflow) {
+    return;
+  }
+
+  float lsb_per_ut = qmc5883l_lsb_per_ut(app->mag);
+  compass_vec_t field_raw = {
+      .x = (float)raw.x / lsb_per_ut,
+      .y = (float)raw.y / lsb_per_ut,
+      .z = (float)raw.z / lsb_per_ut,
+  };
+  if (app->mag_calibrating) {
+    compass_cal_add(&app->mag_session, &field_raw);
+  }
+  compass_vec_t field;
+  compass_apply_cal(&app->mag_cal, &field_raw, &field);
+  if (!app->mag_filter_valid ||
+      ms_since(app->mag_sampled_at) > COMPASS_FILTER_RESET_MS) {
+    app->mag_field = field;
+    app->mag_filter_valid = true;
+  } else {
+    compass_filter(&app->mag_field, &field, COMPASS_FILTER_ALPHA);
+  }
+  app->mag_sampled_at = get_absolute_time();
+}
+
+static void start_mag_calibration(app_t *app) {
+  if (!app->mag_ok) {
+    show_error(app, "No magnetometer");
+    return;
+  }
+  compass_cal_begin(&app->mag_session);
+  app->mag_calibrating = true;
+  printf("Magnetometer calibration started\n");
+  app->refresh_now = true;
+}
+
+static void cancel_mag_calibration(app_t *app) {
+  if (!app->mag_calibrating) {
+    return;
+  }
+  app->mag_calibrating = false;
+  set_status(app, "Cal cancelled", UI_COLOR_GRAY);
+}
+
+static void print_mag_calibration(const compass_cal_t *cal) {
+  printf("Magnetometer calibration (RAM only). To keep it, put this in "
+         "board_config.h:\n");
+  printf("#define MAG_CAL_VALID 1\n");
+  printf("#define MAG_CAL_AXIS_MASK 0x%X\n", cal->axis_mask);
+  printf("#define MAG_CAL_OFFSET_X %.3ff\n", (double)cal->offset.x);
+  printf("#define MAG_CAL_OFFSET_Y %.3ff\n", (double)cal->offset.y);
+  printf("#define MAG_CAL_OFFSET_Z %.3ff\n", (double)cal->offset.z);
+  printf("#define MAG_CAL_SCALE_X %.4ff\n", (double)cal->scale.x);
+  printf("#define MAG_CAL_SCALE_Y %.4ff\n", (double)cal->scale.y);
+  printf("#define MAG_CAL_SCALE_Z %.4ff\n", (double)cal->scale.z);
+}
+
+static void finish_mag_calibration(app_t *app) {
+  compass_cal_t cal;
+  if (!compass_cal_finish(&app->mag_session, &mag_axes,
+                          COMPASS_CAL_MIN_RANGE_UT, &cal)) {
+    set_status(app, "Turn more", UI_COLOR_RED);
+    return;
+  }
+  app->mag_cal = cal;
+  app->mag_calibrating = false;
+  app->mag_filter_valid = false;
+  print_mag_calibration(&cal);
+  uint8_t down = (uint8_t)COMPASS_AXIS_BIT(compass_axis_index(mag_axes.down));
+  set_status(app, (cal.axis_mask & down) ? "Cal saved (3D)" : "Cal saved (2D)",
+             UI_COLOR_GREEN);
+}
+
+static void collect_compass(const app_t *app, ui_compass_t *c) {
+  c->sensor_ok = app->mag_ok && !app->mag_error;
+  c->data_valid = app->mag_received && app->mag_filter_valid;
+  c->overflow = app->mag_overflow;
+  c->calibrated = app->mag_cal.valid;
+  c->declination_deg = MAG_DECLINATION_DEG;
+  c->calibrating = app->mag_calibrating;
+
+  compass_reading_t reading;
+  compass_compute(&mag_axes, &app->mag_field, MAG_DECLINATION_DEG,
+                  COMPASS_MIN_HORIZONTAL_UT, &reading);
+  c->heading_valid = c->data_valid && reading.heading_valid;
+  c->heading_true_deg = reading.heading_true_deg;
+  c->heading_magnetic_deg = reading.heading_magnetic_deg;
+  c->field_ut = reading.field_ut;
+  c->inclination_deg = reading.inclination_deg;
+  uint8_t down = (uint8_t)COMPASS_AXIS_BIT(compass_axis_index(mag_axes.down));
+  c->vertical_calibrated =
+      app->mag_cal.valid && (app->mag_cal.axis_mask & down) != 0;
+  c->x_ut = app->mag_field.x;
+  c->y_ut = app->mag_field.y;
+  c->z_ut = app->mag_field.z;
+
+  if (app->mag_calibrating) {
+    compass_vec_t ranges;
+    compass_cal_ranges(&app->mag_session, &ranges);
+    c->range_x_ut = ranges.x;
+    c->range_y_ut = ranges.y;
+    c->range_z_ut = ranges.z;
+    c->cal_samples = app->mag_session.samples;
+  }
+}
+
+static void draw_compass_card(app_t *app) {
+  mag_update(app);
+  ui_compass_t compass = {0};
+  collect_compass(app, &compass);
+  ui_draw_compass_card(app->oled, &compass);
+  app->compass_refresh_at = make_timeout_time_ms(
+      app->mag_calibrating ? COMPASS_CAL_REFRESH_MS : COMPASS_REFRESH_MS);
+}
+
+// ---------------------------------------------------------------------------
 // Manual mode UI
 // ---------------------------------------------------------------------------
 
-// Called for scheduled (1 s) refreshes only: the shown second must advance by
-// exactly one, otherwise the refresh sits on the RTC second boundary.
 static void track_shown_second(app_t *app, uint8_t second) {
   if (app->shown_second_valid) {
     uint8_t step = (uint8_t)((second + SECONDS_PER_MINUTE - app->shown_second) %
@@ -597,8 +785,6 @@ static void track_shown_second(app_t *app, uint8_t second) {
 }
 
 static void draw_environment_card(app_t *app, bool scheduled) {
-  // RTC first: its read time relative to the refresh tick must not depend on
-  // how long the sensor measurements take.
   ds3231_datetime_t datetime;
   ds3231_status_t ds3231_status = ds3231_read_datetime(app->ds3231, &datetime);
   if (ds3231_status != DS3231_OK) {
@@ -609,8 +795,7 @@ static void draw_environment_card(app_t *app, bool scheduled) {
   }
 
   ui_environment_t env = {0};
-  env.climate_valid =
-      read_climate(app->sht40, &env.temperature, &env.humidity);
+  env.climate_valid = read_climate(app->sht40, &env.temperature, &env.humidity);
   env.pressure_valid = read_pressure(app->bme680, &env.pressure);
 
   ui_draw_environment_card(app->oled, &env,
@@ -629,7 +814,7 @@ static ui_gps_state_t gps_state(const app_t *app, const neo6m_data_t *live) {
   }
   if (!gps_is_fresh(app)) {
     return (ms_since(app->gps_last_rmc) < GPS_IDLE_MS) ? UI_GPS_IDLE
-                                                         : UI_GPS_TIMEOUT;
+                                                       : UI_GPS_TIMEOUT;
   }
   if (live->fix_valid) {
     return UI_GPS_FIX;
@@ -679,6 +864,19 @@ static const char *card_hint(const app_t *app, uint16_t *color) {
       return "Syncing time...";
     }
     return auto_sync_hint(app, color);
+  case CARD_COMPASS:
+    if (!app->mag_ok) {
+      return "";
+    }
+    if (app->mag_calibrating) {
+      *color = UI_COLOR_YELLOW;
+      return "OK:save BACK:x";
+    }
+    if (!app->mag_cal.valid) {
+      *color = UI_COLOR_YELLOW;
+      return "OK: calibrate";
+    }
+    return "OK: recalibrate";
   case CARD_BACKPACK:
     return app->time_invalid ? "" : "OK: start";
   default:
@@ -718,8 +916,7 @@ static void draw_footer(app_t *app) {
   ui_tag_t tags[2];
   uint8_t count = 0;
   tags[count++] = (ui_tag_t){.text = "SD", .color = sd_tag_color()};
-  bool gps_card =
-      app->card == CARD_POSITION || app->card == CARD_SATELLITES;
+  bool gps_card = app->card == CARD_POSITION || app->card == CARD_SATELLITES;
   if (app->gps_enabled && !gps_card) {
     tags[count++] = (ui_tag_t){.text = "GPS", .color = gps_tag_color(app)};
   }
@@ -748,6 +945,9 @@ static void draw_current_card(app_t *app, bool scheduled) {
     collect_gps(app, &gps);
     ui_draw_satellite_card(app->oled, &gps);
     break;
+  case CARD_COMPASS:
+    draw_compass_card(app);
+    break;
   case CARD_BACKPACK:
     ui_draw_backpack_card(app->oled, !app->time_invalid,
                           SAMPLE_INTERVAL_SECONDS);
@@ -765,7 +965,6 @@ static void draw_current_card(app_t *app, bool scheduled) {
   draw_footer(app);
 }
 
-// Moves the whole layout a few pixels every minute (OLED burn-in).
 static void apply_shift(const app_t *app) {
   uint8_t steps_x = UI_SHIFT_MAX_X / BURN_IN_STEP_PX + 1;
   uint8_t steps_y = UI_SHIFT_MAX_Y / BURN_IN_STEP_PX + 1;
@@ -815,6 +1014,7 @@ static void enter_backpack_mode(app_t *app) {
     return;
   }
   gps_commands_finish(app);
+  mag_set_running(app, false);
   app->mode = MODE_BACKPACK;
   app->sync_pending = false;
   show_backpack_view(app);
@@ -822,6 +1022,7 @@ static void enter_backpack_mode(app_t *app) {
 
 static void leave_backpack_mode(app_t *app) {
   app->mode = MODE_MANUAL;
+  mag_set_running(app, true);
   app->view_active = false;
   ssd1351_set_contrast(app->oled, OLED_CONTRAST_MANUAL);
   ssd1351_set_sleep(app->oled, false);
@@ -889,6 +1090,10 @@ static void run_backpack_cycle(app_t *app) {
 // ---------------------------------------------------------------------------
 
 static void handle_back(app_t *app) {
+  if (app->mag_calibrating) {
+    cancel_mag_calibration(app);
+    return;
+  }
   if (app->card != CARD_ENVIRONMENT) {
     app->card = CARD_ENVIRONMENT;
     app->clear_screen = true;
@@ -899,6 +1104,13 @@ static void handle_ok(app_t *app) {
   switch (app->card) {
   case CARD_SATELLITES:
     toggle_auto_sync(app);
+    break;
+  case CARD_COMPASS:
+    if (app->mag_calibrating) {
+      finish_mag_calibration(app);
+    } else {
+      start_mag_calibration(app);
+    }
     break;
   case CARD_BACKPACK:
     buttons_wait_release(BUTTON_OK);
@@ -930,6 +1142,9 @@ static void handle_manual_buttons(app_t *app, uint32_t pressed) {
     app->card = (card_t)((app->card + CARD_COUNT - 1) % CARD_COUNT);
     app->clear_screen = true;
   }
+  if (app->card != CARD_COMPASS) {
+    cancel_mag_calibration(app);
+  }
 }
 
 static void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
@@ -946,26 +1161,31 @@ static void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
   update_shift(app);
 
   bool scheduled = time_reached(*next_refresh);
-  if (app->clear_screen || app->refresh_now || scheduled) {
+  bool compass_due =
+      app->card == CARD_COMPASS && time_reached(app->compass_refresh_at);
+  if (app->clear_screen || app->refresh_now || scheduled || compass_due) {
     app->refresh_now = false;
     draw_current_card(app, scheduled);
   }
   if (scheduled) {
-    // Fixed cadence: the next tick does not depend on how long drawing took.
     *next_refresh = delayed_by_ms(*next_refresh, MANUAL_REFRESH_MS);
     if (app->refresh_resync) {
       *next_refresh = delayed_by_ms(*next_refresh, REFRESH_PHASE_SHIFT_MS);
       app->refresh_resync = false;
     }
     if (time_reached(*next_refresh)) {
-      // Fell behind (e.g. a long SD write): restart the cadence.
       *next_refresh = make_timeout_time_ms(MANUAL_REFRESH_MS);
       app->shown_second_valid = false;
     }
   }
 
+  absolute_time_t wake_at = *next_refresh;
+  if (app->card == CARD_COMPASS &&
+      absolute_time_diff_us(app->compass_refresh_at, wake_at) > 0) {
+    wake_at = app->compass_refresh_at;
+  }
   while (!buttons_has_events() && !app->refresh_now && !rtc_alarm_pending() &&
-         !best_effort_wfe_or_timeout(*next_refresh)) {
+         !best_effort_wfe_or_timeout(wake_at)) {
     gps_service(app);
     gps_commands_service(app);
   }
@@ -986,8 +1206,6 @@ int main() {
   gpio_init(RTC_INT_PIN);
   gpio_set_dir(RTC_INT_PIN, GPIO_IN);
   gpio_pull_up(RTC_INT_PIN);
-  // Wakes the manual-mode WFE when an alarm fires; the shared GPIO callback
-  // (buttons) ignores this pin.
   gpio_set_irq_enabled(RTC_INT_PIN, GPIO_IRQ_EDGE_FALL, true);
 
   bme680_t *bme680 = bme680_create(I2C_PORT, BME680_I2C_ADDRESS,
@@ -1033,7 +1251,6 @@ int main() {
   ssd1351_set_contrast(oled, OLED_CONTRAST_MANUAL);
   ssd1351_fill(oled, 0x0000);
 
-  // Shares SPI0 with the OLED, so it is initialised after it.
   sd_log_init();
 
   neo6m_port_hw_init();
@@ -1083,6 +1300,13 @@ int main() {
   app.gps_toggled_at = get_absolute_time();
   app.auto_sync = GPS_AUTO_SYNC_DEFAULT;
   app.shift_at = make_timeout_time_ms(BURN_IN_SHIFT_MS);
+  app.mag_cal = (compass_cal_t){
+      .valid = MAG_CAL_VALID != 0,
+      .axis_mask = MAG_CAL_AXIS_MASK,
+      .offset = {MAG_CAL_OFFSET_X, MAG_CAL_OFFSET_Y, MAG_CAL_OFFSET_Z},
+      .scale = {MAG_CAL_SCALE_X, MAG_CAL_SCALE_Y, MAG_CAL_SCALE_Z},
+  };
+  app.mag_ok = mag_init(&app);
   gps_request(&app, GPS_CMD_CONFIGURE);
   if (!schedule_from_now(&app)) {
     show_error(&app, "RTC alarm error");
