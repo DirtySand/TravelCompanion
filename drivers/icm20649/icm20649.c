@@ -1,62 +1,44 @@
 #include "icm20649.h"
 #include <stddef.h>
 
-// Bank 0 (datasheet 7.1 / 8).
 #define REG_WHO_AM_I 0x00
 #define REG_USER_CTRL 0x03
 #define REG_PWR_MGMT_1 0x06
 #define REG_INT_STATUS_2 0x1B
-#define REG_ACCEL_XOUT_H 0x2D // ACCEL X/Y/Z, GYRO X/Y/Z, TEMP: 2DH..3AH
+#define REG_ACCEL_XOUT_H 0x2D
 #define REG_FIFO_EN_2 0x67
 #define REG_FIFO_RST 0x68
 #define REG_FIFO_MODE 0x69
 #define REG_FIFO_COUNTH 0x70
-// Present in every bank.
 #define REG_BANK_SEL 0x7F
-
-// Bank 2 (datasheet 7.3 / 10).
 #define REG_GYRO_SMPLRT_DIV 0x00
 #define REG_GYRO_CONFIG_1 0x01
-#define REG_ACCEL_SMPLRT_DIV_1 0x10 // bits 11:8
-#define REG_ACCEL_SMPLRT_DIV_2 0x11 // bits 7:0
+#define REG_ACCEL_SMPLRT_DIV_1 0x10
+#define REG_ACCEL_SMPLRT_DIV_2 0x11
 #define REG_ACCEL_CONFIG 0x14
-
 #define BANK_0 0
 #define BANK_2 2
 #define BANK_UNKNOWN 0xFF
-#define BANK_SHIFT 4 // USER_BANK[1:0] = bits 5:4
-
+#define BANK_SHIFT 4
 #define USER_CTRL_FIFO_EN (1u << 6)
-
 #define PWR_MGMT_1_DEVICE_RESET (1u << 7)
 #define PWR_MGMT_1_SLEEP (1u << 6)
-// CLKSEL = 1: best available clock (PLL when the gyro runs, else internal
-// oscillator) - the setting the datasheet recommends (4.13).
 #define PWR_MGMT_1_CLKSEL_AUTO 0x01u
-
-// GYRO_CONFIG_1 / ACCEL_CONFIG: DLPFCFG[5:3], FS_SEL[2:1], FCHOICE[0].
-// FCHOICE = 1 enables the low-pass filter and the sample-rate divider.
 #define CONFIG_DLPF_SHIFT 3
 #define CONFIG_FS_SHIFT 1
 #define CONFIG_FCHOICE 0x01u
 #define CONFIG_DLPF_MASK 0x07u
 #define CONFIG_FS_MASK 0x03u
-
 #define FIFO_RST_ALL 0x1Fu
-#define FIFO_MODE_SNAPSHOT 0x1Fu // stop writing when full
-#define FIFO_MODE_STREAM 0x00u   // overwrite the oldest data
+#define FIFO_MODE_SNAPSHOT 0x1Fu
+#define FIFO_MODE_STREAM 0x00u
 #define FIFO_COUNT_HIGH_MASK 0x1Fu
 #define INT_STATUS_2_FIFO_OVERFLOW 0x1Fu
-
 #define ACCEL_MAX_RATE_DIV 0x0FFFu
 #define RAW_DATA_LENGTH 14
-
-// Polling the reset bit; the chip may not answer while it restarts.
 #define RESET_POLL_MS 10
 #define RESET_POLL_COUNT 10
-// Gyro start-up from sleep: 35 ms (datasheet table 1).
 #define GYRO_STARTUP_MS 35
-
 #define TEMPERATURE_LSB_PER_C 333.87f
 #define TEMPERATURE_ROOM_C 21.0f
 
@@ -89,7 +71,6 @@ static icm20649_status_t select_bank(icm20649_t *dev, uint8_t bank) {
   }
   icm20649_status_t status =
       write_raw(dev, REG_BANK_SEL, (uint8_t)(bank << BANK_SHIFT));
-  // On failure the selected bank is unknown: force a write next time.
   dev->bank = (status == ICM20649_OK) ? bank : BANK_UNKNOWN;
   return status;
 }
@@ -130,7 +111,6 @@ static icm20649_status_t reset(icm20649_t *dev) {
   if (status != ICM20649_OK) {
     return status;
   }
-  // The reset also returns REG_BANK_SEL to bank 0.
   dev->bank = BANK_0;
   for (uint8_t i = 0; i < RESET_POLL_COUNT; i++) {
     dev->delay_ms(dev->ctx, RESET_POLL_MS);
@@ -212,7 +192,6 @@ icm20649_status_t icm20649_init(icm20649_t *dev,
   if (status != ICM20649_OK) {
     return status;
   }
-  // After a reset the chip sleeps; wake it with the automatic clock.
   status = write_register(dev, BANK_0, REG_PWR_MGMT_1, PWR_MGMT_1_CLKSEL_AUTO);
   if (status != ICM20649_OK) {
     return status;
@@ -274,8 +253,6 @@ icm20649_status_t icm20649_fifo_start(icm20649_t *dev, uint8_t sources,
   if (dev == NULL) {
     return ICM20649_NULL_PTR;
   }
-  // Stop writing, select the mode, enable the FIFO, reset it, then let the
-  // chosen sources in - so it starts empty and frame-aligned.
   icm20649_status_t status = write_register(dev, BANK_0, REG_FIFO_EN_2, 0);
   if (status == ICM20649_OK) {
     status = write_register(dev, BANK_0, REG_FIFO_MODE,

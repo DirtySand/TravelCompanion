@@ -51,7 +51,6 @@ bool compass_axes_valid(const compass_axes_t *axes) {
   return used == 0x07u;
 }
 
-// Unit vector of a signed axis code in sensor coordinates.
 static compass_vec_t axis_vector(int8_t code) {
   compass_vec_t v = {0};
   *component(&v, compass_axis_index(code)) = (code < 0) ? -1.0f : 1.0f;
@@ -75,15 +74,12 @@ bool compass_axes_right_handed(const compass_axes_t *axes) {
 
 void compass_to_device(const compass_axes_t *axes, const compass_vec_t *sensor,
                        compass_vec_t *device) {
-  compass_vec_t in = *sensor; // sensor and device may be the same object
+  compass_vec_t in = *sensor;
   device->x = device_component(&in, axes->forward);
   device->y = device_component(&in, axes->right);
   device->z = device_component(&in, axes->down);
 }
 
-// Body frame x forward, y right, z down. At rest the accelerometer measures
-// the reaction to gravity: f = (g sin(pitch), -g cos(pitch) sin(roll),
-// -g cos(pitch) cos(roll)).
 void compass_tilt(const compass_vec_t *accel_device, float *pitch_deg,
                   float *roll_deg) {
   float f_x = accel_device->x;
