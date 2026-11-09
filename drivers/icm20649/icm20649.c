@@ -10,6 +10,7 @@
 #define REG_FIFO_RST 0x68
 #define REG_FIFO_MODE 0x69
 #define REG_FIFO_COUNTH 0x70
+#define REG_FIFO_R_W 0x72
 #define REG_BANK_SEL 0x7F
 #define REG_GYRO_SMPLRT_DIV 0x00
 #define REG_GYRO_CONFIG_1 0x01
@@ -39,6 +40,7 @@
 #define RESET_POLL_MS 10
 #define RESET_POLL_COUNT 10
 #define GYRO_STARTUP_MS 35
+#define FIFO_READ_CHUNK 240
 #define TEMPERATURE_LSB_PER_C 333.87f
 #define TEMPERATURE_ROOM_C 21.0f
 
@@ -317,6 +319,25 @@ icm20649_status_t icm20649_fifo_count(icm20649_t *dev, uint16_t *count) {
   }
   *count = (uint16_t)(((uint16_t)(data[0] & FIFO_COUNT_HIGH_MASK) << 8) |
                       data[1]);
+  return ICM20649_OK;
+}
+
+icm20649_status_t icm20649_fifo_read(icm20649_t *dev, uint8_t *data,
+                                     uint16_t length) {
+  if (dev == NULL || (data == NULL && length > 0)) {
+    return ICM20649_NULL_PTR;
+  }
+  while (length > 0) {
+    uint8_t chunk = (uint8_t)((length > FIFO_READ_CHUNK) ? FIFO_READ_CHUNK
+                                                          : length);
+    icm20649_status_t status =
+        read_registers(dev, BANK_0, REG_FIFO_R_W, data, chunk);
+    if (status != ICM20649_OK) {
+      return status;
+    }
+    data += chunk;
+    length = (uint16_t)(length - chunk);
+  }
   return ICM20649_OK;
 }
 

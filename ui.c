@@ -513,7 +513,14 @@ static void draw_compass_headings(ssd1351_t *oled, const ui_compass_t *c,
     draw_compass_text(oled, 1, "Mag: ---", color);
     draw_compass_text(oled, 2, "Dir: ---", color);
   }
-  draw_compass_text(oled, 3, "", UI_COLOR_WHITE);
+  static const char *const reference_names[] = {
+      [UI_COMPASS_REF_LEVEL] = "Ref: lvl",
+      [UI_COMPASS_REF_TOP] = "Ref: top",
+      [UI_COMPASS_REF_BACK] = "Ref: back",
+  };
+  draw_compass_text(oled, 3, reference_names[c->reference],
+                    (c->reference == UI_COMPASS_REF_LEVEL) ? UI_COLOR_GRAY
+                                                           : UI_COLOR_WHITE);
   snprintf(buffer, sizeof(buffer),
            (c->declination_deg < 0.0f) ? "Dec:%.1f" DEG : "Dec: %.1f" DEG,
            (double)c->declination_deg);

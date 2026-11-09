@@ -57,11 +57,19 @@ typedef struct {
   uint32_t dropped_bytes;
 } ui_gps_t;
 
+
+typedef enum {
+  UI_COMPASS_REF_LEVEL,
+  UI_COMPASS_REF_TOP,
+  UI_COMPASS_REF_BACK
+} ui_compass_ref_t;
+
 typedef struct {
   bool sensor_ok;
   bool data_valid;
   bool overflow;
   bool calibrated;
+  ui_compass_ref_t reference;
   bool heading_valid;
   float heading_true_deg;
   float heading_magnetic_deg;

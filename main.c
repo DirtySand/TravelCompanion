@@ -1,3 +1,4 @@
+#include "attitude.h"
 #include "board_config.h"
 #include "buttons.h"
 #include "compass.h"
@@ -59,6 +60,11 @@
 #define IMU_DLPF_CFG 4
 #define IMU_FIFO_PROBE false
 #define IMU_FIFO_PROBE_MS 1000
+#define IMU_FIFO_FRAME_BYTES 12
+#define IMU_FIFO_MAX_FRAMES (4096 / IMU_FIFO_FRAME_BYTES)
+#define IMU_SAMPLE_PERIOD_S ((1.0f + IMU_GYRO_RATE_DIV) / 1100.0f)
+#define IMU_FIFO_CHECK_FRAMES 10
+#define MAG_ATTITUDE_MAX_DT_S 1.0f
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
 #define BUTTON_NEXT_CARD BUTTON_BOTTOM_RIGHT
@@ -167,6 +173,11 @@ typedef struct {
   compass_vec_t imu_gyro_dps;
   float imu_temp_c;
   absolute_time_t fast_refresh_at;
+  attitude_t attitude;
+  bool imu_fifo_running;
+  bool imu_fifo_checked;
+  bool mag_fed;
+  absolute_time_t mag_fed_at;
 } app_t;
 
 static app_t app;
@@ -698,6 +709,20 @@ static void mag_update(app_t *app) {
   }
   compass_vec_t field;
   compass_apply_cal(&app->mag_cal, &field_raw, &field);
+
+  compass_vec_t field_device;
+  compass_to_device(&mag_axes, &field, &field_device);
+  float dt_s = MAG_ATTITUDE_MAX_DT_S;
+  if (app->mag_fed) {
+    dt_s = (float)ms_since(app->mag_fed_at) / 1000.0f;
+    if (dt_s > MAG_ATTITUDE_MAX_DT_S) {
+      dt_s = MAG_ATTITUDE_MAX_DT_S;
+    }
+  }
+  attitude_update_mag(&app->attitude, &field_device, dt_s);
+  app->mag_fed = true;
+  app->mag_fed_at = get_absolute_time();
+
   if (!app->mag_filter_valid ||
       ms_since(app->mag_sampled_at) > COMPASS_FILTER_RESET_MS) {
     app->mag_field = field;
@@ -750,13 +775,14 @@ static void finish_mag_calibration(app_t *app) {
   app->mag_cal = cal;
   app->mag_calibrating = false;
   app->mag_filter_valid = false;
+  attitude_forget_field(&app->attitude);
   print_mag_calibration(&cal);
   uint8_t down = (uint8_t)COMPASS_AXIS_BIT(compass_axis_index(mag_axes.down));
   set_status(app, (cal.axis_mask & down) ? "Cal saved (3D)" : "Cal saved (2D)",
              UI_COLOR_GREEN);
 }
 
-static void collect_compass(const app_t *app, ui_compass_t *c) {
+static void collect_compass(app_t *app, ui_compass_t *c) {
   c->sensor_ok = app->mag_ok && !app->mag_error;
   c->data_valid = app->mag_received && app->mag_filter_valid;
   c->overflow = app->mag_overflow;
@@ -764,14 +790,28 @@ static void collect_compass(const app_t *app, ui_compass_t *c) {
   c->declination_deg = MAG_DECLINATION_DEG;
   c->calibrating = app->mag_calibrating;
 
-  compass_reading_t reading;
-  compass_compute(&mag_axes, &app->mag_field, MAG_DECLINATION_DEG,
-                  COMPASS_MIN_HORIZONTAL_UT, &reading);
-  c->heading_valid = c->data_valid && reading.heading_valid;
-  c->heading_true_deg = reading.heading_true_deg;
-  c->heading_magnetic_deg = reading.heading_magnetic_deg;
-  c->field_ut = reading.field_ut;
-  c->inclination_deg = reading.inclination_deg;
+  attitude_output_t att;
+  attitude_output(&app->attitude, MAG_DECLINATION_DEG,
+                  COMPASS_MIN_HORIZONTAL_UT, &att);
+  if (att.field_valid && app->imu_ok && !app->imu_error) {
+    c->reference = (att.axis == ATTITUDE_AXIS_SCREEN) ? UI_COMPASS_REF_BACK
+                                                      : UI_COMPASS_REF_TOP;
+    c->heading_valid = c->data_valid && att.heading_valid;
+    c->heading_true_deg = att.heading_true_deg;
+    c->heading_magnetic_deg = att.heading_magnetic_deg;
+    c->field_ut = att.field_ut;
+    c->inclination_deg = att.inclination_deg;
+  } else {
+    compass_reading_t reading;
+    compass_compute(&mag_axes, &app->mag_field, MAG_DECLINATION_DEG,
+                    COMPASS_MIN_HORIZONTAL_UT, &reading);
+    c->reference = UI_COMPASS_REF_LEVEL;
+    c->heading_valid = c->data_valid && reading.heading_valid;
+    c->heading_true_deg = reading.heading_true_deg;
+    c->heading_magnetic_deg = reading.heading_magnetic_deg;
+    c->field_ut = reading.field_ut;
+    c->inclination_deg = reading.inclination_deg;
+  }
   uint8_t down = (uint8_t)COMPASS_AXIS_BIT(compass_axis_index(mag_axes.down));
   c->vertical_calibrated =
       app->mag_cal.valid && (app->mag_cal.axis_mask & down) != 0;
@@ -790,7 +830,6 @@ static void collect_compass(const app_t *app, ui_compass_t *c) {
 }
 
 static void draw_compass_card(app_t *app) {
-  mag_update(app);
   ui_compass_t compass = {0};
   collect_compass(app, &compass);
   ui_draw_compass_card(app->oled, &compass);
@@ -799,6 +838,18 @@ static void draw_compass_card(app_t *app) {
 // ---------------------------------------------------------------------------
 // IMU
 // ---------------------------------------------------------------------------
+
+static void imu_fifo_start(app_t *app) {
+  icm20649_status_t status = icm20649_fifo_start(
+      app->imu,
+      ICM20649_FIFO_ACCEL | ICM20649_FIFO_GYRO_X | ICM20649_FIFO_GYRO_Y |
+          ICM20649_FIFO_GYRO_Z,
+      true);
+  app->imu_fifo_running = (status == ICM20649_OK);
+  if (!app->imu_fifo_running) {
+    printf("ICM-20649 FIFO start failed: %d\n", status);
+  }
+}
 
 static void imu_probe_fifo(app_t *app) {
   uint16_t count = 0;
@@ -864,6 +915,7 @@ static bool imu_init(app_t *app) {
   if (IMU_FIFO_PROBE) {
     imu_probe_fifo(app);
   }
+  imu_fifo_start(app);
   return true;
 }
 
@@ -871,11 +923,96 @@ static void imu_set_running(app_t *app, bool running) {
   if (!app->imu_ok) {
     return;
   }
+  if (!running && app->imu_fifo_running) {
+    icm20649_fifo_stop(app->imu);
+    app->imu_fifo_running = false;
+  }
   if (icm20649_set_sleep(app->imu, !running) != ICM20649_OK) {
     printf("ICM-20649 sleep change failed\n");
     app->imu_error = true;
   }
   app->imu_filter_valid = false;
+  if (running) {
+    attitude_reset(&app->attitude);
+    imu_fifo_start(app);
+  }
+}
+
+static int16_t be16(const uint8_t *p) {
+  return (int16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+static void imu_check_frames(app_t *app, float accel_norm_sum,
+                             uint32_t frames) {
+  if (app->imu_fifo_checked || frames < IMU_FIFO_CHECK_FRAMES) {
+    return;
+  }
+  app->imu_fifo_checked = true;
+  float mean = accel_norm_sum / (float)frames;
+  printf("ICM-20649 FIFO: %lu frames, mean |a| %.2f g%s\n",
+         (unsigned long)frames, (double)mean,
+         (mean > 0.5f && mean < 1.5f) ? "" : " - unexpected frame layout!");
+}
+
+static void imu_drain_fifo(app_t *app) {
+  static uint8_t buffer[IMU_FIFO_MAX_FRAMES * IMU_FIFO_FRAME_BYTES];
+  if (!app->imu_ok || !app->imu_fifo_running) {
+    return;
+  }
+  uint16_t count = 0;
+  bool overflow = false;
+  icm20649_status_t status = icm20649_fifo_count(app->imu, &count);
+  if (status == ICM20649_OK) {
+    status = icm20649_fifo_overflowed(app->imu, &overflow);
+  }
+  uint16_t frames = count / IMU_FIFO_FRAME_BYTES;
+  if (frames > IMU_FIFO_MAX_FRAMES) {
+    frames = IMU_FIFO_MAX_FRAMES;
+  }
+  if (status == ICM20649_OK && frames > 0) {
+    status = icm20649_fifo_read(app->imu, buffer,
+                                (uint16_t)(frames * IMU_FIFO_FRAME_BYTES));
+  }
+  if (status != ICM20649_OK) {
+    if (!app->imu_error) {
+      printf("ICM-20649 FIFO read failed: %d\n", status);
+    }
+    app->imu_error = true;
+    return;
+  }
+
+  float lsb_per_g = icm20649_accel_lsb_per_g(app->imu);
+  float lsb_per_dps = icm20649_gyro_lsb_per_dps(app->imu);
+  float accel_norm_sum = 0.0f;
+  for (uint16_t i = 0; i < frames; i++) {
+    const uint8_t *frame = &buffer[i * IMU_FIFO_FRAME_BYTES];
+    compass_vec_t accel = {
+        .x = (float)be16(&frame[0]) / lsb_per_g,
+        .y = (float)be16(&frame[2]) / lsb_per_g,
+        .z = (float)be16(&frame[4]) / lsb_per_g,
+    };
+    compass_vec_t gyro = {
+        .x = (float)be16(&frame[6]) / lsb_per_dps,
+        .y = (float)be16(&frame[8]) / lsb_per_dps,
+        .z = (float)be16(&frame[10]) / lsb_per_dps,
+    };
+    accel_norm_sum +=
+        sqrtf(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
+    compass_to_device(&imu_axes, &accel, &accel);
+    compass_to_device(&imu_axes, &gyro, &gyro);
+    attitude_update_imu(&app->attitude, &accel, &gyro, IMU_SAMPLE_PERIOD_S);
+  }
+  imu_check_frames(app, accel_norm_sum, frames);
+
+  if (overflow) {
+    printf("ICM-20649 FIFO overflow - restarting it\n");
+    imu_fifo_start(app);
+  }
+}
+
+static void nav_update(app_t *app) {
+  imu_drain_fifo(app);
+  mag_update(app);
 }
 
 static void imu_update(app_t *app) {
@@ -1356,6 +1493,7 @@ static void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
     return;
   }
   update_shift(app);
+  nav_update(app);
 
   bool scheduled = time_reached(*next_refresh);
   bool fast_due =
@@ -1503,6 +1641,7 @@ int main() {
       .offset = {MAG_CAL_OFFSET_X, MAG_CAL_OFFSET_Y, MAG_CAL_OFFSET_Z},
       .scale = {MAG_CAL_SCALE_X, MAG_CAL_SCALE_Y, MAG_CAL_SCALE_Z},
   };
+  attitude_init(&app.attitude, NULL);
   app.mag_ok = mag_init(&app);
   app.imu_ok = imu_init(&app);
   gps_request(&app, GPS_CMD_CONFIGURE);

@@ -80,6 +80,8 @@ icm20649_status_t icm20649_fifo_start(icm20649_t *dev, uint8_t sources,
                                       bool stop_when_full);
 icm20649_status_t icm20649_fifo_stop(icm20649_t *dev);
 icm20649_status_t icm20649_fifo_count(icm20649_t *dev, uint16_t *count);
+icm20649_status_t icm20649_fifo_read(icm20649_t *dev, uint8_t *data,
+                                     uint16_t length);
 icm20649_status_t icm20649_fifo_overflowed(icm20649_t *dev, bool *overflow);
 
 float icm20649_accel_lsb_per_g(const icm20649_t *dev);
