@@ -58,6 +58,28 @@ typedef struct {
 } ui_gps_t;
 
 typedef struct {
+  bool sensor_ok;
+  bool data_valid;
+  bool overflow;
+  bool calibrated;
+  bool heading_valid;
+  float heading_true_deg;
+  float heading_magnetic_deg;
+  float declination_deg;
+  float field_ut;
+  bool vertical_calibrated;
+  float inclination_deg;
+  float x_ut;
+  float y_ut;
+  float z_ut;
+  bool calibrating;
+  float range_x_ut;
+  float range_y_ut;
+  float range_z_ut;
+  uint32_t cal_samples;
+} ui_compass_t;
+
+typedef struct {
   const char *text;
   uint16_t color;
 } ui_tag_t;
@@ -78,9 +100,9 @@ void ui_draw_environment_card(ssd1351_t *oled, const ui_environment_t *env,
                               bool rtc_time_valid);
 void ui_draw_position_card(ssd1351_t *oled, const ui_gps_t *gps);
 void ui_draw_satellite_card(ssd1351_t *oled, const ui_gps_t *gps);
+void ui_draw_compass_card(ssd1351_t *oled, const ui_compass_t *compass);
 void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
                            uint16_t interval_seconds);
-// Minimal screen shown for a moment in backpack mode (no shift applied).
 void ui_draw_backpack_view(ssd1351_t *oled, const ds3231_datetime_t *utc,
                            bool sd_error);
 

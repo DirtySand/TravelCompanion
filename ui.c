@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "board_config.h"
 #include "datetime_utils.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -16,7 +17,30 @@ void ui_set_shift(uint8_t dx, uint8_t dy) {
   shift_y = (dy > UI_SHIFT_MAX_Y) ? UI_SHIFT_MAX_Y : dy;
 }
 
-void ui_clear(ssd1351_t *oled) { ssd1351_fill(oled, UI_COLOR_BLACK); }
+#define COMPASS_TEXT_COLUMNS 9
+#define COMPASS_CX (UI_TEXT_WIDTH - 24)
+#define COMPASS_CY 26
+#define COMPASS_RADIUS 23
+#define COMPASS_NEEDLE_LENGTH 19
+#define COMPASS_TICK_LENGTH 3
+#define COMPASS_HUB_SIZE 3
+#define DEG_TO_RAD (3.14159265358979f / 180.0f)
+
+typedef struct {
+  bool drawn;
+  uint16_t color;
+  int16_t north_x;
+  int16_t north_y;
+  int16_t south_x;
+  int16_t south_y;
+} needle_t;
+
+static needle_t needle;
+
+void ui_clear(ssd1351_t *oled) {
+  ssd1351_fill(oled, UI_COLOR_BLACK);
+  needle.drawn = false;
+}
 
 static uint8_t row_y(uint8_t row) {
   return (uint8_t)(shift_y + row * UI_ROW_HEIGHT);
@@ -51,7 +75,6 @@ void ui_draw_centered(ssd1351_t *oled, uint8_t row, const char *text,
   uint8_t left = (uint8_t)((UI_TEXT_WIDTH - text_width) / 2u);
   uint8_t right = (uint8_t)(UI_TEXT_WIDTH - text_width - left);
   uint8_t y = row_y(row);
-  // Clear only the gaps so the text itself never flickers.
   if (left > 0) {
     ssd1351_fill_rect(oled, shift_x, y, left, UI_CHAR_HEIGHT, UI_COLOR_BLACK);
   }
@@ -327,6 +350,251 @@ void ui_draw_satellite_card(ssd1351_t *oled, const ui_gps_t *gps) {
   ui_draw_line(oled, 8, buffer, UI_COLOR_GRAY);
   snprintf(buffer, sizeof(buffer), "Err: %lu", errors);
   ui_draw_line(oled, 9, buffer, UI_COLOR_GRAY);
+}
+
+// ---------------------------------------------------------------------------
+// Compass card
+// ---------------------------------------------------------------------------
+
+static void plot(ssd1351_t *oled, int16_t x, int16_t y, uint16_t color) {
+  int16_t sx = (int16_t)(x + shift_x);
+  int16_t sy = (int16_t)(y + shift_y);
+  if (sx < 0 || sy < 0 || sx >= UI_SCREEN_SIZE || sy >= UI_SCREEN_SIZE) {
+    return;
+  }
+  ssd1351_draw_pixel(oled, (uint8_t)sx, (uint8_t)sy, color);
+}
+
+static void draw_segment(ssd1351_t *oled, int16_t x0, int16_t y0, int16_t x1,
+                         int16_t y1, uint16_t color) {
+  int16_t dx = (int16_t)((x1 > x0) ? x1 - x0 : x0 - x1);
+  int16_t dy = (int16_t)(-((y1 > y0) ? y1 - y0 : y0 - y1));
+  int16_t step_x = (x0 < x1) ? 1 : -1;
+  int16_t step_y = (y0 < y1) ? 1 : -1;
+  int16_t error = (int16_t)(dx + dy);
+  while (true) {
+    plot(oled, x0, y0, color);
+    if (x0 == x1 && y0 == y1) {
+      return;
+    }
+    int16_t doubled = (int16_t)(2 * error);
+    if (doubled >= dy) {
+      error = (int16_t)(error + dy);
+      x0 = (int16_t)(x0 + step_x);
+    }
+    if (doubled <= dx) {
+      error = (int16_t)(error + dx);
+      y0 = (int16_t)(y0 + step_y);
+    }
+  }
+}
+
+static void draw_circle(ssd1351_t *oled, int16_t cx, int16_t cy, int16_t r,
+                        uint16_t color) {
+  int16_t x = r;
+  int16_t y = 0;
+  int16_t error = (int16_t)(1 - r);
+  while (x >= y) {
+    plot(oled, (int16_t)(cx + x), (int16_t)(cy + y), color);
+    plot(oled, (int16_t)(cx + y), (int16_t)(cy + x), color);
+    plot(oled, (int16_t)(cx - y), (int16_t)(cy + x), color);
+    plot(oled, (int16_t)(cx - x), (int16_t)(cy + y), color);
+    plot(oled, (int16_t)(cx - x), (int16_t)(cy - y), color);
+    plot(oled, (int16_t)(cx - y), (int16_t)(cy - x), color);
+    plot(oled, (int16_t)(cx + y), (int16_t)(cy - x), color);
+    plot(oled, (int16_t)(cx + x), (int16_t)(cy - y), color);
+    y++;
+    if (error < 0) {
+      error = (int16_t)(error + 2 * y + 1);
+    } else {
+      x--;
+      error = (int16_t)(error + 2 * (y - x) + 1);
+    }
+  }
+}
+
+static void erase_needle(ssd1351_t *oled) {
+  if (!needle.drawn) {
+    return;
+  }
+  draw_segment(oled, COMPASS_CX, COMPASS_CY, needle.north_x, needle.north_y,
+               UI_COLOR_BLACK);
+  draw_segment(oled, COMPASS_CX, COMPASS_CY, needle.south_x, needle.south_y,
+               UI_COLOR_BLACK);
+  needle.drawn = false;
+}
+
+static void update_needle(ssd1351_t *oled, bool show, float heading_deg,
+                          uint16_t color) {
+  needle_t next = {0};
+  if (show) {
+    float angle = heading_deg * DEG_TO_RAD;
+    int16_t ox = (int16_t)lroundf((float)COMPASS_NEEDLE_LENGTH * sinf(angle));
+    int16_t oy = (int16_t)lroundf((float)COMPASS_NEEDLE_LENGTH * cosf(angle));
+    next.drawn = true;
+    next.color = color;
+    next.north_x = (int16_t)(COMPASS_CX - ox);
+    next.north_y = (int16_t)(COMPASS_CY - oy);
+    next.south_x = (int16_t)(COMPASS_CX + ox);
+    next.south_y = (int16_t)(COMPASS_CY + oy);
+  }
+  if (needle.drawn && next.drawn && needle.color == next.color &&
+      needle.north_x == next.north_x && needle.north_y == next.north_y) {
+    return;
+  }
+  erase_needle(oled);
+  if (!next.drawn) {
+    return;
+  }
+  draw_segment(oled, COMPASS_CX, COMPASS_CY, next.south_x, next.south_y,
+               UI_COLOR_GRAY);
+  draw_segment(oled, COMPASS_CX, COMPASS_CY, next.north_x, next.north_y,
+               next.color);
+  needle = next;
+}
+
+static void draw_rose(ssd1351_t *oled) {
+  draw_circle(oled, COMPASS_CX, COMPASS_CY, COMPASS_RADIUS, UI_COLOR_GRAY);
+  int16_t top = (int16_t)(COMPASS_CY - COMPASS_RADIUS - COMPASS_TICK_LENGTH);
+  draw_segment(oled, COMPASS_CX, top, COMPASS_CX,
+               (int16_t)(COMPASS_CY - COMPASS_RADIUS - 1), UI_COLOR_WHITE);
+}
+
+static void draw_hub(ssd1351_t *oled) {
+  int16_t x = (int16_t)(shift_x + COMPASS_CX - COMPASS_HUB_SIZE / 2);
+  int16_t y = (int16_t)(shift_y + COMPASS_CY - COMPASS_HUB_SIZE / 2);
+  ssd1351_fill_rect(oled, (uint8_t)x, (uint8_t)y, COMPASS_HUB_SIZE,
+                    COMPASS_HUB_SIZE, UI_COLOR_WHITE);
+}
+
+static unsigned rounded_degrees(float degrees) {
+  long value = lroundf(degrees);
+  value %= 360;
+  if (value < 0) {
+    value += 360;
+  }
+  return (unsigned)value;
+}
+
+static const char *cardinal(float degrees) {
+  static const char *const names[] = {"N", "NE", "E", "SE",
+                                      "S", "SW", "W", "NW"};
+  unsigned sector = (rounded_degrees(degrees) * 2u + 45u) / 90u;
+  return names[sector % 8u];
+}
+
+static void format_ut(char *buffer, size_t size, float value) {
+  if (value > -99.95f && value < 99.95f) {
+    snprintf(buffer, size, "%.1f", (double)value);
+  } else {
+    snprintf(buffer, size, "%.0f", (double)value);
+  }
+}
+
+static void draw_compass_text(ssd1351_t *oled, uint8_t row, const char *text,
+                              uint16_t color) {
+  draw_padded(oled, 0, row, text, COMPASS_TEXT_COLUMNS, color);
+}
+
+static void draw_compass_headings(ssd1351_t *oled, const ui_compass_t *c,
+                                  uint16_t color) {
+  char buffer[32];
+  if (c->heading_valid) {
+    snprintf(buffer, sizeof(buffer), "Hdg: %u" DEG,
+             rounded_degrees(c->heading_true_deg));
+    draw_compass_text(oled, 0, buffer, color);
+    snprintf(buffer, sizeof(buffer), "Mag: %u" DEG,
+             rounded_degrees(c->heading_magnetic_deg));
+    draw_compass_text(oled, 1, buffer, color);
+    snprintf(buffer, sizeof(buffer), "Dir: %s", cardinal(c->heading_true_deg));
+    draw_compass_text(oled, 2, buffer, color);
+  } else {
+    draw_compass_text(oled, 0, "Hdg: ---", color);
+    draw_compass_text(oled, 1, "Mag: ---", color);
+    draw_compass_text(oled, 2, "Dir: ---", color);
+  }
+  draw_compass_text(oled, 3, "", UI_COLOR_WHITE);
+  snprintf(buffer, sizeof(buffer),
+           (c->declination_deg < 0.0f) ? "Dec:%.1f" DEG : "Dec: %.1f" DEG,
+           (double)c->declination_deg);
+  draw_compass_text(oled, 4, buffer, UI_COLOR_GRAY);
+}
+
+static void draw_compass_parameters(ssd1351_t *oled, const ui_compass_t *c,
+                                    uint16_t color) {
+  char buffer[32];
+  char a[12];
+  char b[12];
+  if (!c->data_valid) {
+    clear_rows(oled, 6, UI_CONTENT_ROWS - 1);
+    ui_draw_line(oled, 6, "B: ---", UI_COLOR_GRAY);
+    return;
+  }
+  if (c->overflow) {
+    ui_draw_line(oled, 6, "B: overflow", UI_COLOR_RED);
+  } else {
+    format_ut(a, sizeof(a), c->field_ut);
+    snprintf(buffer, sizeof(buffer), "B: %s uT", a);
+    ui_draw_line(oled, 6, buffer,
+                 c->vertical_calibrated ? color : UI_COLOR_GRAY);
+  }
+  if (c->vertical_calibrated && !c->overflow) {
+    snprintf(buffer, sizeof(buffer), "Inc: %.1f" DEG,
+             (double)c->inclination_deg);
+    ui_draw_line(oled, 7, buffer, color);
+  } else {
+    ui_draw_line(oled, 7, "Inc: ---", UI_COLOR_GRAY);
+  }
+  format_ut(a, sizeof(a), c->x_ut);
+  format_ut(b, sizeof(b), c->y_ut);
+  snprintf(buffer, sizeof(buffer), "X:%s Y:%s", a, b);
+  ui_draw_line(oled, 8, buffer, UI_COLOR_GRAY);
+  format_ut(a, sizeof(a), c->z_ut);
+  snprintf(buffer, sizeof(buffer), "Z:%s uT", a);
+  ui_draw_line(oled, 9, buffer, UI_COLOR_GRAY);
+}
+
+static void draw_calibration_progress(ssd1351_t *oled, const ui_compass_t *c) {
+  char buffer[32];
+  ui_draw_line(oled, 6, "Turn 360, flip", UI_COLOR_YELLOW);
+  snprintf(buffer, sizeof(buffer), "Rx:%3.0f Ry:%3.0f", (double)c->range_x_ut,
+           (double)c->range_y_ut);
+  ui_draw_line(oled, 7, buffer, UI_COLOR_WHITE);
+  snprintf(buffer, sizeof(buffer), "Rz:%3.0f uT", (double)c->range_z_ut);
+  ui_draw_line(oled, 8, buffer, UI_COLOR_WHITE);
+  snprintf(buffer, sizeof(buffer), "Samples: %lu",
+           (unsigned long)c->cal_samples);
+  ui_draw_line(oled, 9, buffer, UI_COLOR_GRAY);
+}
+
+void ui_draw_compass_card(ssd1351_t *oled, const ui_compass_t *compass) {
+  draw_rose(oled);
+  ui_draw_line(oled, 5, "", UI_COLOR_WHITE);
+
+  if (!compass->sensor_ok) {
+    draw_compass_text(oled, 0, "Mag: ERR", UI_COLOR_RED);
+    for (uint8_t row = 1; row <= 4; row++) {
+      draw_compass_text(oled, row, "", UI_COLOR_WHITE);
+    }
+    clear_rows(oled, 6, UI_CONTENT_ROWS - 1);
+    ui_draw_line(oled, 6, "No magnetometer", UI_COLOR_RED);
+    update_needle(oled, false, 0.0f, UI_COLOR_BLACK);
+    draw_hub(oled);
+    return;
+  }
+
+  uint16_t color = compass->calibrated ? UI_COLOR_WHITE : UI_COLOR_GRAY;
+  draw_compass_headings(oled, compass, color);
+  update_needle(oled, compass->heading_valid && !compass->overflow,
+                compass->heading_true_deg,
+                compass->calibrated ? UI_COLOR_RED : UI_COLOR_YELLOW);
+  draw_hub(oled);
+
+  if (compass->calibrating) {
+    draw_calibration_progress(oled, compass);
+  } else {
+    draw_compass_parameters(oled, compass, color);
+  }
 }
 
 void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
