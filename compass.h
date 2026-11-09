@@ -43,6 +43,17 @@ typedef struct {
 
 bool compass_axes_valid(const compass_axes_t *axes);
 uint8_t compass_axis_index(int8_t code);
+// forward x right must equal down: a real sensor frame cannot be mirrored,
+// so a left-handed mapping always has one sign wrong.
+bool compass_axes_right_handed(const compass_axes_t *axes);
+// Sensor axes -> device frame: x = forward, y = right, z = down.
+void compass_to_device(const compass_axes_t *axes, const compass_vec_t *sensor,
+                       compass_vec_t *device);
+// Tilt from the accelerometer (device frame, any unit) while the device is
+// not accelerating. Pitch > 0: top edge raised. Roll > 0: right edge
+// lowered. At rest the accelerometer reads -1 g along down when level.
+void compass_tilt(const compass_vec_t *accel_device, float *pitch_deg,
+                  float *roll_deg);
 
 void compass_cal_begin(compass_cal_session_t *session);
 

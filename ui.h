@@ -80,6 +80,18 @@ typedef struct {
 } ui_compass_t;
 
 typedef struct {
+  bool sensor_ok;  // false: IMU did not answer on I2C
+  bool data_valid; // at least one sample received
+  bool axes_ok;    // IMU_AXIS_* mapping valid and right-handed
+  float accel_g[3];  // sensor axes X, Y, Z
+  float accel_norm_g;
+  float gyro_dps[3]; // sensor axes X, Y, Z
+  float pitch_deg;   // device frame, from the accelerometer
+  float roll_deg;
+  float chip_temp_c;
+} ui_imu_t;
+
+typedef struct {
   const char *text;
   uint16_t color;
 } ui_tag_t;
@@ -101,6 +113,8 @@ void ui_draw_environment_card(ssd1351_t *oled, const ui_environment_t *env,
 void ui_draw_position_card(ssd1351_t *oled, const ui_gps_t *gps);
 void ui_draw_satellite_card(ssd1351_t *oled, const ui_gps_t *gps);
 void ui_draw_compass_card(ssd1351_t *oled, const ui_compass_t *compass);
+// Raw accelerometer and gyro on the sensor axes, tilt, chip temperature.
+void ui_draw_imu_card(ssd1351_t *oled, const ui_imu_t *imu);
 void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
                            uint16_t interval_seconds);
 void ui_draw_backpack_view(ssd1351_t *oled, const ds3231_datetime_t *utc,

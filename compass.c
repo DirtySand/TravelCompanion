@@ -51,6 +51,48 @@ bool compass_axes_valid(const compass_axes_t *axes) {
   return used == 0x07u;
 }
 
+// Unit vector of a signed axis code in sensor coordinates.
+static compass_vec_t axis_vector(int8_t code) {
+  compass_vec_t v = {0};
+  *component(&v, compass_axis_index(code)) = (code < 0) ? -1.0f : 1.0f;
+  return v;
+}
+
+bool compass_axes_right_handed(const compass_axes_t *axes) {
+  if (!compass_axes_valid(axes)) {
+    return false;
+  }
+  compass_vec_t f = axis_vector(axes->forward);
+  compass_vec_t r = axis_vector(axes->right);
+  compass_vec_t d = axis_vector(axes->down);
+  compass_vec_t cross = {
+      .x = f.y * r.z - f.z * r.y,
+      .y = f.z * r.x - f.x * r.z,
+      .z = f.x * r.y - f.y * r.x,
+  };
+  return cross.x == d.x && cross.y == d.y && cross.z == d.z;
+}
+
+void compass_to_device(const compass_axes_t *axes, const compass_vec_t *sensor,
+                       compass_vec_t *device) {
+  compass_vec_t in = *sensor; // sensor and device may be the same object
+  device->x = device_component(&in, axes->forward);
+  device->y = device_component(&in, axes->right);
+  device->z = device_component(&in, axes->down);
+}
+
+// Body frame x forward, y right, z down. At rest the accelerometer measures
+// the reaction to gravity: f = (g sin(pitch), -g cos(pitch) sin(roll),
+// -g cos(pitch) cos(roll)).
+void compass_tilt(const compass_vec_t *accel_device, float *pitch_deg,
+                  float *roll_deg) {
+  float f_x = accel_device->x;
+  float f_y = accel_device->y;
+  float f_z = accel_device->z;
+  *pitch_deg = atan2f(f_x, sqrtf(f_y * f_y + f_z * f_z)) * RAD_TO_DEG;
+  *roll_deg = atan2f(-f_y, -f_z) * RAD_TO_DEG;
+}
+
 void compass_cal_begin(compass_cal_session_t *session) {
   session->min = (compass_vec_t){0};
   session->max = (compass_vec_t){0};

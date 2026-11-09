@@ -597,6 +597,51 @@ void ui_draw_compass_card(ssd1351_t *oled, const ui_compass_t *compass) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// IMU card
+// ---------------------------------------------------------------------------
+
+void ui_draw_imu_card(ssd1351_t *oled, const ui_imu_t *imu) {
+  static const char axis_names[3] = {'X', 'Y', 'Z'};
+  char buffer[32];
+  if (!imu->sensor_ok) {
+    clear_rows(oled, 0, UI_CONTENT_ROWS - 1);
+    ui_draw_line(oled, 0, "IMU: ERR", UI_COLOR_RED);
+    ui_draw_line(oled, 2, "No IMU", UI_COLOR_RED);
+    return;
+  }
+  if (!imu->data_valid) {
+    clear_rows(oled, 0, UI_CONTENT_ROWS - 1);
+    ui_draw_line(oled, 0, "IMU: ---", UI_COLOR_GRAY);
+    return;
+  }
+  for (uint8_t axis = 0; axis < 3; axis++) {
+    snprintf(buffer, sizeof(buffer), "a%c: %+.2f g", axis_names[axis],
+             (double)imu->accel_g[axis]);
+    ui_draw_line(oled, axis, buffer, UI_COLOR_WHITE);
+  }
+  snprintf(buffer, sizeof(buffer), "|a|: %.2f g", (double)imu->accel_norm_g);
+  ui_draw_line(oled, 3, buffer, UI_COLOR_GRAY);
+  for (uint8_t axis = 0; axis < 3; axis++) {
+    snprintf(buffer, sizeof(buffer), "g%c:%+7.1f" DEG "/s", axis_names[axis],
+             (double)imu->gyro_dps[axis]);
+    ui_draw_line(oled, (uint8_t)(4 + axis), buffer, UI_COLOR_WHITE);
+  }
+  if (imu->axes_ok) {
+    snprintf(buffer, sizeof(buffer), "Pitch: %+.1f" DEG,
+             (double)imu->pitch_deg);
+    ui_draw_line(oled, 7, buffer, UI_COLOR_WHITE);
+    snprintf(buffer, sizeof(buffer), "Roll: %+.1f" DEG, (double)imu->roll_deg);
+    ui_draw_line(oled, 8, buffer, UI_COLOR_WHITE);
+  } else {
+    ui_draw_line(oled, 7, "Axes: bad cfg", UI_COLOR_RED);
+    ui_draw_line(oled, 8, "", UI_COLOR_WHITE);
+  }
+  snprintf(buffer, sizeof(buffer), "Chip: %.1f" DEG "C",
+           (double)imu->chip_temp_c);
+  ui_draw_line(oled, 9, buffer, UI_COLOR_GRAY);
+}
+
 void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
                            uint16_t interval_seconds) {
   char buffer[32];
