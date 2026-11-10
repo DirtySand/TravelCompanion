@@ -59,8 +59,6 @@ add_library(sd_log STATIC sd_log.c sd_diskio.c)
 target_link_libraries(sd_log PUBLIC sdcard_port fatfs log_crypto sample ds3231 board_config pico_rand pico_stdlib)
 add_executable(travel-companion main.c)
 target_link_libraries(travel-companion pico_stdlib hardware_i2c bme680_port ssd1351_port ds3231_port sht40_port neo6m_port qmc5883l_port icm20649_port compass motion timezone datetime_utils power hardware_clocks buttons ui time_sync sample sd_log)
-target_compile_definitions(travel-companion PRIVATE
-    PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=10000)
 add_library(board_config INTERFACE)
 target_include_directories(board_config INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 

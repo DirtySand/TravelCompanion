@@ -17,6 +17,7 @@
 #include "drivers/sht40/sht40_port.h"
 #include "hardware/clocks.h"
 #include "hardware/i2c.h"
+#include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 #include "power.h"
 #include "sample.h"
@@ -61,6 +62,8 @@
 #define IMU_GYRO_RATE_DIV 21
 #define IMU_DLPF_CFG 4
 #define IMU_FIFO_PROBE false
+#define USB_LOG_WAIT_MS 10000
+#define USB_LOG_POST_CONNECT_MS 50
 #define IMU_FIFO_PROBE_MS 1000
 #define IMU_FIFO_FRAME_BYTES 12
 #define IMU_FIFO_MAX_FRAMES (4096 / IMU_FIFO_FRAME_BYTES)
@@ -848,11 +851,11 @@ static void draw_compass_card(app_t *app) {
 // ---------------------------------------------------------------------------
 
 static void imu_fifo_start(app_t *app) {
-  icm20649_status_t status =
-      icm20649_fifo_start(app->imu,
-                          ICM20649_FIFO_ACCEL | ICM20649_FIFO_GYRO_X |
-                              ICM20649_FIFO_GYRO_Y | ICM20649_FIFO_GYRO_Z,
-                          true);
+  icm20649_status_t status = icm20649_fifo_start(
+      app->imu,
+      ICM20649_FIFO_ACCEL | ICM20649_FIFO_GYRO_X | ICM20649_FIFO_GYRO_Y |
+          ICM20649_FIFO_GYRO_Z,
+      true);
   app->imu_fifo_running = (status == ICM20649_OK);
   if (!app->imu_fifo_running) {
     printf("ICM-20649 FIFO start failed: %d\n", status);
@@ -962,6 +965,9 @@ static void imu_check_frames(app_t *app, float accel_norm_sum,
          (mean > 0.5f && mean < 1.5f) ? "" : " - unexpected frame layout!");
 }
 
+// Vertical acceleration without gravity, m/s^2, up positive: the specific
+// force projected on "up" from the attitude filter, minus 1 g. Before the
+// filter knows gravity, |a| - 1 g is used (orientation-free, noisier).
 static void imu_count_steps(app_t *app, const compass_vec_t *accel_g) {
   float up_g;
   if (app->attitude.down_valid) {
@@ -1135,6 +1141,7 @@ static void draw_trip_card(app_t *app) {
   ui_draw_trip_card(app->oled, &trip);
 }
 
+// OK: start / pause / resume.
 static void trip_ok(app_t *app) {
   trip_state_t state = trip_toggle(&app->trip, time_us_64());
   if (state == TRIP_RUNNING) {
@@ -1144,6 +1151,8 @@ static void trip_ok(app_t *app) {
   }
 }
 
+// Long OK: reset. Refused while running, so a long press during a walk
+// cannot wipe it.
 static void trip_long_ok(app_t *app) {
   if (trip_running(&app->trip)) {
     set_status(app, "Pause first", UI_COLOR_RED);
@@ -1615,10 +1624,44 @@ static void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
   }
 }
 
+// Boot logs need a terminal that is already open. Holding BACK while the
+// device starts waits for one (up to USB_LOG_WAIT_MS, any button skips);
+// otherwise the boot does not wait for USB at all.
+static void wait_for_usb_log(ssd1351_t *oled) {
+  if (gpio_get(buttons_pin(BUTTON_BACK)) != 0) {
+    return;
+  }
+  ui_draw_centered(oled, 2, "USB log", UI_COLOR_WHITE);
+  ui_draw_centered(oled, 4, "Open terminal", UI_COLOR_GRAY);
+  ui_draw_centered(oled, 8, "Any button:skip", UI_COLOR_GRAY);
+  buttons_wait_release(BUTTON_BACK);
+  absolute_time_t deadline = make_timeout_time_ms(USB_LOG_WAIT_MS);
+  int32_t shown = -1;
+  while (!stdio_usb_connected() && !buttons_has_events() &&
+         !time_reached(deadline)) {
+    int32_t left_s =
+        (int32_t)((absolute_time_diff_us(get_absolute_time(), deadline) +
+                   999999) /
+                  1000000);
+    if (left_s != shown) {
+      char text[16];
+      snprintf(text, sizeof(text), "%ld s", (long)left_s);
+      ui_draw_centered(oled, 6, text, UI_COLOR_YELLOW);
+      shown = left_s;
+    }
+    sleep_ms(10);
+  }
+  if (stdio_usb_connected()) {
+    sleep_ms(USB_LOG_POST_CONNECT_MS);
+    printf("USB log connected\n");
+  }
+  buttons_take_events();
+  ui_clear(oled);
+}
+
 int main() {
   set_sys_clock_khz(SYS_CLOCK_KHZ, true);
   stdio_init_all();
-  sleep_ms(1000);
   i2c_init(I2C_PORT, I2C_BAUDRATE);
   gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
   gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
@@ -1631,6 +1674,16 @@ int main() {
   gpio_set_dir(RTC_INT_PIN, GPIO_IN);
   gpio_pull_up(RTC_INT_PIN);
   gpio_set_irq_enabled(RTC_INT_PIN, GPIO_IRQ_EDGE_FALL, true);
+
+  ssd1351_port_hw_init();
+  ssd1351_io_t io = ssd1351_port_get_io();
+  ssd1351_t *oled = ssd1351_get_instance();
+  ssd1351_init(oled, &io);
+  ssd1351_set_rotation(oled, SSD1351_ROT_0);
+  ssd1351_set_contrast(oled, OLED_CONTRAST_MANUAL);
+  ssd1351_fill(oled, 0x0000);
+
+  wait_for_usb_log(oled);
 
   bme680_t *bme680 = bme680_create(I2C_PORT, BME680_I2C_ADDRESS,
                                    bme680_port_i2c_read, bme680_port_i2c_write);
@@ -1666,14 +1719,6 @@ int main() {
   } else {
     printf("SHT40 serial: 0x%08lX\n", (unsigned long)sht40_serial);
   }
-
-  ssd1351_port_hw_init();
-  ssd1351_io_t io = ssd1351_port_get_io();
-  ssd1351_t *oled = ssd1351_get_instance();
-  ssd1351_init(oled, &io);
-  ssd1351_set_rotation(oled, SSD1351_ROT_0);
-  ssd1351_set_contrast(oled, OLED_CONTRAST_MANUAL);
-  ssd1351_fill(oled, 0x0000);
 
   sd_log_init();
 
