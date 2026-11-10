@@ -21,8 +21,10 @@
 #include "power.h"
 #include "sample.h"
 #include "sd_log.h"
+#include "steps.h"
 #include "time_sync.h"
 #include "timezone.h"
+#include "trip.h"
 #include "ui.h"
 #include <math.h>
 #include <stdint.h>
@@ -65,6 +67,8 @@
 #define IMU_SAMPLE_PERIOD_S ((1.0f + IMU_GYRO_RATE_DIV) / 1100.0f)
 #define IMU_FIFO_CHECK_FRAMES 10
 #define MAG_ATTITUDE_MAX_DT_S 1.0f
+#define STANDARD_GRAVITY_MS2 9.80665f
+#define MS_TO_KMH 3.6f
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
 #define BUTTON_NEXT_CARD BUTTON_BOTTOM_RIGHT
@@ -92,6 +96,7 @@ typedef enum {
   CARD_POSITION,
   CARD_SATELLITES,
   CARD_COMPASS,
+  CARD_TRIP,
   CARD_IMU,
   CARD_BACKPACK,
   CARD_COUNT,
@@ -100,7 +105,8 @@ typedef enum {
 static const char *const card_titles[CARD_COUNT] = {
     [CARD_ENVIRONMENT] = "ENV", [CARD_POSITION] = "POS",
     [CARD_SATELLITES] = "SAT",  [CARD_COMPASS] = "CMP",
-    [CARD_IMU] = "IMU",         [CARD_BACKPACK] = "PACK",
+    [CARD_TRIP] = "TRIP",       [CARD_IMU] = "IMU",
+    [CARD_BACKPACK] = "PACK",
 };
 
 typedef enum {
@@ -178,6 +184,8 @@ typedef struct {
   bool imu_fifo_checked;
   bool mag_fed;
   absolute_time_t mag_fed_at;
+  steps_t steps;
+  trip_t trip;
 } app_t;
 
 static app_t app;
@@ -840,11 +848,11 @@ static void draw_compass_card(app_t *app) {
 // ---------------------------------------------------------------------------
 
 static void imu_fifo_start(app_t *app) {
-  icm20649_status_t status = icm20649_fifo_start(
-      app->imu,
-      ICM20649_FIFO_ACCEL | ICM20649_FIFO_GYRO_X | ICM20649_FIFO_GYRO_Y |
-          ICM20649_FIFO_GYRO_Z,
-      true);
+  icm20649_status_t status =
+      icm20649_fifo_start(app->imu,
+                          ICM20649_FIFO_ACCEL | ICM20649_FIFO_GYRO_X |
+                              ICM20649_FIFO_GYRO_Y | ICM20649_FIFO_GYRO_Z,
+                          true);
   app->imu_fifo_running = (status == ICM20649_OK);
   if (!app->imu_fifo_running) {
     printf("ICM-20649 FIFO start failed: %d\n", status);
@@ -954,6 +962,22 @@ static void imu_check_frames(app_t *app, float accel_norm_sum,
          (mean > 0.5f && mean < 1.5f) ? "" : " - unexpected frame layout!");
 }
 
+static void imu_count_steps(app_t *app, const compass_vec_t *accel_g) {
+  float up_g;
+  if (app->attitude.down_valid) {
+    const compass_vec_t *d = &app->attitude.down;
+    up_g = -(accel_g->x * d->x + accel_g->y * d->y + accel_g->z * d->z);
+  } else {
+    up_g = sqrtf(accel_g->x * accel_g->x + accel_g->y * accel_g->y +
+                 accel_g->z * accel_g->z);
+  }
+  float distance_m = 0.0f;
+  uint8_t steps =
+      steps_update(&app->steps, (up_g - 1.0f) * STANDARD_GRAVITY_MS2,
+                   IMU_SAMPLE_PERIOD_S, &distance_m);
+  trip_add(&app->trip, steps, distance_m);
+}
+
 static void imu_drain_fifo(app_t *app) {
   static uint8_t buffer[IMU_FIFO_MAX_FRAMES * IMU_FIFO_FRAME_BYTES];
   if (!app->imu_ok || !app->imu_fifo_running) {
@@ -1001,6 +1025,7 @@ static void imu_drain_fifo(app_t *app) {
     compass_to_device(&imu_axes, &accel, &accel);
     compass_to_device(&imu_axes, &gyro, &gyro);
     attitude_update_imu(&app->attitude, &accel, &gyro, IMU_SAMPLE_PERIOD_S);
+    imu_count_steps(app, &accel);
   }
   imu_check_frames(app, accel_norm_sum, frames);
 
@@ -1080,6 +1105,52 @@ static void draw_imu_card(app_t *app) {
   ui_imu_t imu = {0};
   collect_imu(app, &imu);
   ui_draw_imu_card(app->oled, &imu);
+}
+
+static void draw_trip_card(app_t *app) {
+  uint64_t now_us = time_us_64();
+  const trip_t *t = &app->trip;
+  bool walking = steps_walking(&app->steps);
+  float speed_ms =
+      walking ? app->steps.cadence_spm / 60.0f * app->steps.last_step_m : 0.0f;
+  ui_trip_state_t state = UI_TRIP_STOPPED;
+  if (t->state == TRIP_RUNNING) {
+    state = UI_TRIP_RUNNING;
+  } else if (t->state == TRIP_PAUSED) {
+    state = UI_TRIP_PAUSED;
+  }
+  ui_trip_t trip = {
+      .sensor_ok = app->imu_ok && !app->imu_error && app->imu_fifo_running,
+      .state = state,
+      .elapsed_s = (uint32_t)(trip_elapsed_us(t, now_us) / 1000000u),
+      .steps = t->steps,
+      .distance_m = t->distance_m,
+      .walking = walking,
+      .speed_kmh = speed_ms * MS_TO_KMH,
+      .avg_speed_kmh = trip_average_speed(t, now_us) * MS_TO_KMH,
+      .cadence_spm = app->steps.cadence_spm,
+      .last_step_m = app->steps.last_step_m,
+      .weinberg_k = app->steps.config.weinberg_k,
+  };
+  ui_draw_trip_card(app->oled, &trip);
+}
+
+static void trip_ok(app_t *app) {
+  trip_state_t state = trip_toggle(&app->trip, time_us_64());
+  if (state == TRIP_RUNNING) {
+    set_status(app, "Trip started", UI_COLOR_GREEN);
+  } else {
+    set_status(app, "Trip paused", UI_COLOR_YELLOW);
+  }
+}
+
+static void trip_long_ok(app_t *app) {
+  if (trip_running(&app->trip)) {
+    set_status(app, "Pause first", UI_COLOR_RED);
+    return;
+  }
+  trip_reset(&app->trip);
+  set_status(app, "Trip reset", UI_COLOR_GRAY);
 }
 
 static uint32_t fast_refresh_ms(const app_t *app) {
@@ -1202,6 +1273,15 @@ static const char *card_hint(const app_t *app, uint16_t *color) {
       return "OK: calibrate";
     }
     return "OK: recalibrate";
+  case CARD_TRIP:
+    switch (app->trip.state) {
+    case TRIP_RUNNING:
+      return "OK: pause";
+    case TRIP_PAUSED:
+      return "OK:go hold:rst";
+    default:
+      return "OK: start";
+    }
   case CARD_BACKPACK:
     return app->time_invalid ? "" : "OK: start";
   default:
@@ -1272,6 +1352,9 @@ static void draw_current_card(app_t *app, bool scheduled) {
     break;
   case CARD_COMPASS:
     draw_compass_card(app);
+    break;
+  case CARD_TRIP:
+    draw_trip_card(app);
     break;
   case CARD_IMU:
     draw_imu_card(app);
@@ -1414,7 +1497,7 @@ static void run_backpack_cycle(app_t *app) {
     leave_backpack_mode(app);
     return;
   }
-  if (events & BUTTON_MASK(BUTTON_OK)) {
+  if (events & (BUTTON_MASK(BUTTON_OK) | BUTTON_LONG_MASK(BUTTON_OK))) {
     show_backpack_view(app);
   }
 }
@@ -1446,6 +1529,9 @@ static void handle_ok(app_t *app) {
       start_mag_calibration(app);
     }
     break;
+  case CARD_TRIP:
+    trip_ok(app);
+    break;
   case CARD_BACKPACK:
     buttons_wait_release(BUTTON_OK);
     enter_backpack_mode(app);
@@ -1464,6 +1550,9 @@ static void handle_manual_buttons(app_t *app, uint32_t pressed) {
   }
   if (pressed & BUTTON_MASK(BUTTON_OK)) {
     handle_ok(app);
+  }
+  if ((pressed & BUTTON_LONG_MASK(BUTTON_OK)) && app->card == CARD_TRIP) {
+    trip_long_ok(app);
   }
   if (app->mode != MODE_MANUAL) {
     return;
@@ -1536,7 +1625,7 @@ int main() {
   gpio_pull_up(I2C_SDA_PIN);
   gpio_pull_up(I2C_SCL_PIN);
 
-  buttons_init(BUTTON_MASK(BUTTON_BACK));
+  buttons_init(BUTTON_MASK(BUTTON_BACK) | BUTTON_MASK(BUTTON_OK));
 
   gpio_init(RTC_INT_PIN);
   gpio_set_dir(RTC_INT_PIN, GPIO_IN);
@@ -1642,6 +1731,11 @@ int main() {
       .scale = {MAG_CAL_SCALE_X, MAG_CAL_SCALE_Y, MAG_CAL_SCALE_Z},
   };
   attitude_init(&app.attitude, NULL);
+  steps_config_t steps_config;
+  steps_default_config(&steps_config);
+  steps_config.weinberg_k = STEP_WEINBERG_K;
+  steps_init(&app.steps, &steps_config);
+  trip_reset(&app.trip);
   app.mag_ok = mag_init(&app);
   app.imu_ok = imu_init(&app);
   gps_request(&app, GPS_CMD_CONFIGURE);

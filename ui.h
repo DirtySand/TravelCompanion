@@ -57,7 +57,6 @@ typedef struct {
   uint32_t dropped_bytes;
 } ui_gps_t;
 
-
 typedef enum {
   UI_COMPASS_REF_LEVEL,
   UI_COMPASS_REF_TOP,
@@ -99,6 +98,26 @@ typedef struct {
   float chip_temp_c;
 } ui_imu_t;
 
+typedef enum {
+  UI_TRIP_STOPPED,
+  UI_TRIP_RUNNING,
+  UI_TRIP_PAUSED,
+} ui_trip_state_t;
+
+typedef struct {
+  bool sensor_ok;
+  ui_trip_state_t state;
+  uint32_t elapsed_s;
+  uint32_t steps;
+  float distance_m;
+  bool walking;
+  float speed_kmh;
+  float avg_speed_kmh;
+  float cadence_spm;
+  float last_step_m;
+  float weinberg_k;
+} ui_trip_t;
+
 typedef struct {
   const char *text;
   uint16_t color;
@@ -122,6 +141,7 @@ void ui_draw_position_card(ssd1351_t *oled, const ui_gps_t *gps);
 void ui_draw_satellite_card(ssd1351_t *oled, const ui_gps_t *gps);
 void ui_draw_compass_card(ssd1351_t *oled, const ui_compass_t *compass);
 void ui_draw_imu_card(ssd1351_t *oled, const ui_imu_t *imu);
+void ui_draw_trip_card(ssd1351_t *oled, const ui_trip_t *trip);
 void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
                            uint16_t interval_seconds);
 void ui_draw_backpack_view(ssd1351_t *oled, const ds3231_datetime_t *utc,

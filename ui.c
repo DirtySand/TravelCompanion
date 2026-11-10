@@ -649,6 +649,75 @@ void ui_draw_imu_card(ssd1351_t *oled, const ui_imu_t *imu) {
   ui_draw_line(oled, 9, buffer, UI_COLOR_GRAY);
 }
 
+// ---------------------------------------------------------------------------
+// Trip card
+// ---------------------------------------------------------------------------
+
+static void format_distance(char *buffer, size_t size, float metres) {
+  if (metres < 999.5f) {
+    snprintf(buffer, size, "%.0f m", (double)metres);
+  } else if (metres < 99999.5f) {
+    snprintf(buffer, size, "%.3f km", (double)(metres / 1000.0f));
+  } else if (metres < 999950.0f) {
+    snprintf(buffer, size, "%.2f km", (double)(metres / 1000.0f));
+  } else {
+    snprintf(buffer, size, "%.1f km", (double)(metres / 1000.0f));
+  }
+}
+
+void ui_draw_trip_card(ssd1351_t *oled, const ui_trip_t *trip) {
+  static const char *const state_names[] = {
+      [UI_TRIP_STOPPED] = "Trip: STOP",
+      [UI_TRIP_RUNNING] = "Trip: RUN",
+      [UI_TRIP_PAUSED] = "Trip: PAUSE",
+  };
+  static const uint16_t state_colors[] = {
+      [UI_TRIP_STOPPED] = UI_COLOR_GRAY,
+      [UI_TRIP_RUNNING] = UI_COLOR_GREEN,
+      [UI_TRIP_PAUSED] = UI_COLOR_YELLOW,
+  };
+  char buffer[32];
+  char value[16];
+  ui_draw_line(oled, 0, state_names[trip->state], state_colors[trip->state]);
+
+  uint32_t s = trip->elapsed_s;
+  snprintf(buffer, sizeof(buffer), "Time: %lu:%02lu:%02lu",
+           (unsigned long)(s / 3600u), (unsigned long)(s / 60u % 60u),
+           (unsigned long)(s % 60u));
+  ui_draw_line(oled, 1, buffer, UI_COLOR_WHITE);
+  snprintf(buffer, sizeof(buffer), "Steps: %lu", (unsigned long)trip->steps);
+  ui_draw_line(oled, 2, buffer, UI_COLOR_WHITE);
+  format_distance(value, sizeof(value), trip->distance_m);
+  snprintf(buffer, sizeof(buffer), "Dist: %s", value);
+  ui_draw_line(oled, 3, buffer, UI_COLOR_WHITE);
+
+  if (!trip->sensor_ok) {
+    ui_draw_line(oled, 4, "No IMU", UI_COLOR_RED);
+    clear_rows(oled, 5, UI_CONTENT_ROWS - 1);
+    return;
+  }
+  if (trip->walking) {
+    snprintf(buffer, sizeof(buffer), "Spd: %.1f km/h", (double)trip->speed_kmh);
+    ui_draw_line(oled, 4, buffer, UI_COLOR_WHITE);
+    snprintf(buffer, sizeof(buffer), "Cad: %.0f /min",
+             (double)trip->cadence_spm);
+    ui_draw_line(oled, 6, buffer, UI_COLOR_WHITE);
+    snprintf(buffer, sizeof(buffer), "Step: %.2f m", (double)trip->last_step_m);
+    ui_draw_line(oled, 7, buffer, UI_COLOR_WHITE);
+  } else {
+    ui_draw_line(oled, 4, "Spd: ---", UI_COLOR_GRAY);
+    ui_draw_line(oled, 6, "Cad: ---", UI_COLOR_GRAY);
+    ui_draw_line(oled, 7, "Step: ---", UI_COLOR_GRAY);
+  }
+  snprintf(buffer, sizeof(buffer), "Avg: %.1f km/h",
+           (double)trip->avg_speed_kmh);
+  ui_draw_line(oled, 5, buffer, UI_COLOR_WHITE);
+  ui_draw_line(oled, 8, trip->walking ? "Now: walking" : "Now: still",
+               trip->walking ? UI_COLOR_GREEN : UI_COLOR_GRAY);
+  snprintf(buffer, sizeof(buffer), "K: %.2f", (double)trip->weinberg_k);
+  ui_draw_line(oled, 9, buffer, UI_COLOR_GRAY);
+}
+
 void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
                            uint16_t interval_seconds) {
   char buffer[32];
