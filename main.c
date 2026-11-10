@@ -851,11 +851,11 @@ static void draw_compass_card(app_t *app) {
 // ---------------------------------------------------------------------------
 
 static void imu_fifo_start(app_t *app) {
-  icm20649_status_t status = icm20649_fifo_start(
-      app->imu,
-      ICM20649_FIFO_ACCEL | ICM20649_FIFO_GYRO_X | ICM20649_FIFO_GYRO_Y |
-          ICM20649_FIFO_GYRO_Z,
-      true);
+  icm20649_status_t status =
+      icm20649_fifo_start(app->imu,
+                          ICM20649_FIFO_ACCEL | ICM20649_FIFO_GYRO_X |
+                              ICM20649_FIFO_GYRO_Y | ICM20649_FIFO_GYRO_Z,
+                          true);
   app->imu_fifo_running = (status == ICM20649_OK);
   if (!app->imu_fifo_running) {
     printf("ICM-20649 FIFO start failed: %d\n", status);
@@ -965,9 +965,6 @@ static void imu_check_frames(app_t *app, float accel_norm_sum,
          (mean > 0.5f && mean < 1.5f) ? "" : " - unexpected frame layout!");
 }
 
-// Vertical acceleration without gravity, m/s^2, up positive: the specific
-// force projected on "up" from the attitude filter, minus 1 g. Before the
-// filter knows gravity, |a| - 1 g is used (orientation-free, noisier).
 static void imu_count_steps(app_t *app, const compass_vec_t *accel_g) {
   float up_g;
   if (app->attitude.down_valid) {
@@ -1141,7 +1138,6 @@ static void draw_trip_card(app_t *app) {
   ui_draw_trip_card(app->oled, &trip);
 }
 
-// OK: start / pause / resume.
 static void trip_ok(app_t *app) {
   trip_state_t state = trip_toggle(&app->trip, time_us_64());
   if (state == TRIP_RUNNING) {
@@ -1151,8 +1147,6 @@ static void trip_ok(app_t *app) {
   }
 }
 
-// Long OK: reset. Refused while running, so a long press during a walk
-// cannot wipe it.
 static void trip_long_ok(app_t *app) {
   if (trip_running(&app->trip)) {
     set_status(app, "Pause first", UI_COLOR_RED);
@@ -1624,9 +1618,6 @@ static void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
   }
 }
 
-// Boot logs need a terminal that is already open. Holding BACK while the
-// device starts waits for one (up to USB_LOG_WAIT_MS, any button skips);
-// otherwise the boot does not wait for USB at all.
 static void wait_for_usb_log(ssd1351_t *oled) {
   if (gpio_get(buttons_pin(BUTTON_BACK)) != 0) {
     return;
