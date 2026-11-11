@@ -21,6 +21,24 @@ typedef enum {
   STEPS_SEEK_VALLEY,
 } steps_phase_t;
 
+typedef enum {
+  STEPS_PEAK_TOO_SOON,
+  STEPS_PEAK_PENDING,
+  STEPS_PEAK_CONFIRMED,
+  STEPS_PEAK_WALKING,
+} steps_peak_result_t;
+
+typedef struct {
+  uint32_t count;
+  float time_s;
+  float peak;
+  float valley;
+  float rise_s;
+  float interval_s;
+  uint8_t pending;
+  steps_peak_result_t result;
+} steps_peak_t;
+
 typedef struct {
   steps_config_t config;
   bool filter_ready;
@@ -31,6 +49,7 @@ typedef struct {
   float peak;
   float peak_time_s;
   float valley;
+  float valley_time_s;
   bool have_step;
   float last_step_time_s;
   uint8_t pending_steps;
@@ -38,6 +57,7 @@ typedef struct {
   bool walking;
   float last_step_m;
   float cadence_spm;
+  steps_peak_t last_peak;
 } steps_t;
 
 void steps_default_config(steps_config_t *config);

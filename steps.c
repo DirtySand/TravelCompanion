@@ -47,9 +47,21 @@ static void end_series(steps_t *s) {
   s->cadence_spm = 0.0f;
 }
 
+static void note_peak(steps_t *s, steps_peak_result_t result) {
+  steps_peak_t *p = &s->last_peak;
+  p->count++;
+  p->time_s = s->peak_time_s;
+  p->peak = s->peak;
+  p->valley = s->valley;
+  p->rise_s = s->peak_time_s - s->valley_time_s;
+  p->pending = s->pending_steps;
+  p->result = result;
+}
+
 static uint8_t register_step(steps_t *s, float *distance_m) {
   const steps_config_t *c = &s->config;
   float interval = s->peak_time_s - s->last_step_time_s;
+  s->last_peak.interval_s = s->have_step ? interval : 0.0f;
   bool continues = s->have_step && interval <= c->max_interval_s;
   if (!continues) {
     end_series(s);
@@ -67,11 +79,13 @@ static uint8_t register_step(steps_t *s, float *distance_m) {
 
   if (s->walking) {
     *distance_m += length;
+    note_peak(s, STEPS_PEAK_WALKING);
     return 1;
   }
   s->pending_steps++;
   s->pending_distance_m += length;
   if (s->pending_steps < c->confirm_steps) {
+    note_peak(s, STEPS_PEAK_PENDING);
     return 0;
   }
   uint8_t committed = s->pending_steps;
@@ -79,6 +93,7 @@ static uint8_t register_step(steps_t *s, float *distance_m) {
   s->pending_steps = 0;
   s->pending_distance_m = 0.0f;
   s->walking = true;
+  note_peak(s, STEPS_PEAK_CONFIRMED);
   return committed;
 }
 
@@ -92,6 +107,7 @@ uint8_t steps_update(steps_t *s, float vertical_accel_ms2, float dt_s,
     s->peak = vertical_accel_ms2;
     s->peak_time_s = s->time_s;
     s->valley = vertical_accel_ms2;
+    s->valley_time_s = s->time_s;
     s->filter_ready = true;
   }
   s->stage1 += c->filter_alpha * (vertical_accel_ms2 - s->stage1);
@@ -111,19 +127,25 @@ uint8_t steps_update(steps_t *s, float vertical_accel_ms2, float dt_s,
     }
     if (y < s->valley) {
       s->valley = y;
+      s->valley_time_s = s->time_s;
     }
     if (s->peak >= c->peak_threshold && y <= s->peak - c->hysteresis) {
       bool too_soon = s->have_step &&
                       s->peak_time_s - s->last_step_time_s < c->min_interval_s;
       if (!too_soon) {
         committed = register_step(s, distance_m);
+      } else {
+        s->last_peak.interval_s = s->peak_time_s - s->last_step_time_s;
+        note_peak(s, STEPS_PEAK_TOO_SOON);
       }
       s->phase = STEPS_SEEK_VALLEY;
       s->valley = y;
+      s->valley_time_s = s->time_s;
     }
   } else {
     if (y < s->valley) {
       s->valley = y;
+      s->valley_time_s = s->time_s;
     }
     if (y >= s->valley + c->hysteresis) {
       s->phase = STEPS_SEEK_PEAK;

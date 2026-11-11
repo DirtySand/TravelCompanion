@@ -1,6 +1,8 @@
+#include "alt.h"
 #include "attitude.h"
 #include "board_config.h"
 #include "buttons.h"
+#include "cards.h"
 #include "compass.h"
 #include "datetime_utils.h"
 #include "drivers/SSD1351U3/ssd1351.h"
@@ -15,18 +17,26 @@
 #include "drivers/qmc5883l/qmc5883l_port.h"
 #include "drivers/sht40/sht40.h"
 #include "drivers/sht40/sht40_port.h"
+#include "fusion.h"
+#include "geo.h"
 #include "hardware/clocks.h"
 #include "hardware/i2c.h"
+#include "measure.h"
+#include "pico/rand.h"
 #include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 #include "power.h"
 #include "sample.h"
 #include "sd_log.h"
+#include "pdr.h"
 #include "steps.h"
+#include "sun.h"
 #include "time_sync.h"
 #include "timezone.h"
 #include "trip.h"
 #include "ui.h"
+#include "waypoints.h"
+#include "wp_flash.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -62,6 +72,7 @@
 #define IMU_GYRO_RATE_DIV 21
 #define IMU_DLPF_CFG 4
 #define IMU_FIFO_PROBE false
+#define STEP_DEBUG_LOG true
 #define USB_LOG_WAIT_MS 10000
 #define USB_LOG_POST_CONNECT_MS 50
 #define IMU_FIFO_PROBE_MS 1000
@@ -72,6 +83,19 @@
 #define MAG_ATTITUDE_MAX_DT_S 1.0f
 #define STANDARD_GRAVITY_MS2 9.80665f
 #define MS_TO_KMH 3.6f
+#define PDR_MIN_RANGE_M 1.0f
+#define PDR_REFRESH_MS 200
+#define NAV_FIX_MAX_DT_S 10.0f
+#define NAV_STEPLESS_MIN_KMH 3.0f
+#define ALT_GPS_MAX_HDOP 2.0f
+#define ALT_GPS_MIN_SATELLITES 6
+#define BARO_PERIOD_MS 1000
+#define BARO_RETRY_MS 10000
+#define AREA_MAX_POINTS 32
+#define LINE_MIN_BASE_M 2.0f
+#define CONFIRM_MS 4000
+#define TOOLS_REFRESH_MS 500
+#define LINE_REFRESH_MS 300
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
 #define BUTTON_NEXT_CARD BUTTON_BOTTOM_RIGHT
@@ -99,7 +123,15 @@ typedef enum {
   CARD_POSITION,
   CARD_SATELLITES,
   CARD_COMPASS,
+  CARD_NAV,
+  CARD_ALT,
   CARD_TRIP,
+  CARD_PDR,
+  CARD_WPT,
+  CARD_DIST,
+  CARD_LINE,
+  CARD_AREA,
+  CARD_SUN,
   CARD_IMU,
   CARD_BACKPACK,
   CARD_COUNT,
@@ -108,7 +140,11 @@ typedef enum {
 static const char *const card_titles[CARD_COUNT] = {
     [CARD_ENVIRONMENT] = "ENV", [CARD_POSITION] = "POS",
     [CARD_SATELLITES] = "SAT",  [CARD_COMPASS] = "CMP",
-    [CARD_TRIP] = "TRIP",       [CARD_IMU] = "IMU",
+    [CARD_NAV] = "NAV",         [CARD_ALT] = "ALT",
+    [CARD_TRIP] = "TRIP",       [CARD_PDR] = "PDR",
+    [CARD_WPT] = "WPT",         [CARD_DIST] = "DIST",
+    [CARD_LINE] = "LINE",       [CARD_AREA] = "AREA",
+    [CARD_SUN] = "SUN",         [CARD_IMU] = "IMU",
     [CARD_BACKPACK] = "PACK",
 };
 
@@ -123,6 +159,43 @@ typedef struct {
   uint16_t color;
   absolute_time_t expires;
 } status_message_t;
+
+typedef enum {
+  POINT_NONE,
+  POINT_HERE,
+  POINT_MARK,
+  POINT_WAYPOINT,
+} point_kind_t;
+
+typedef struct {
+  point_kind_t kind;
+  uint16_t wp_id;
+  measure_point_t pos;
+  bool alt_valid;
+  float alt_m;
+  float track_m;
+} tool_point_t;
+
+typedef struct {
+  measure_point_t pos;
+  bool alt_valid;
+  float alt_m;
+  bool track_valid;
+  float track_m;
+} resolved_point_t;
+
+typedef enum {
+  SELECT_NONE,
+  SELECT_WPT,
+  SELECT_DIST_A,
+  SELECT_DIST_B,
+} select_mode_t;
+
+typedef enum {
+  CONFIRM_NONE,
+  CONFIRM_WPT_CLEAR,
+  CONFIRM_AREA_CLEAR,
+} confirm_action_t;
 
 typedef struct {
   ssd1351_t *oled;
@@ -189,7 +262,45 @@ typedef struct {
   absolute_time_t mag_fed_at;
   steps_t steps;
   trip_t trip;
+  pdr_t pdr;
+  fusion_t fusion;
+  float dr_east_m;
+  float dr_north_m;
+  bool dr_steps_no_heading;
+  float track_m;
+  uint32_t session;
+  bool steps_since_fix;
+  bool nav_fix_seen;
+  absolute_time_t nav_fix_at;
+  bool nav_idle_seen;
+  absolute_time_t nav_idle_at;
+  alt_t alt;
+  absolute_time_t baro_at;
+  absolute_time_t baro_last;
+  bool baro_seen;
+  waypoints_t wps;
+  bool wps_ok;
+  uint16_t wp_index;
+  select_mode_t select;
+  uint16_t select_index;
+  confirm_action_t confirm;
+  absolute_time_t confirm_deadline;
+  tool_point_t dist_a;
+  tool_point_t dist_b;
+  uint8_t dist_stage;
+  cards_line_stage_t line_stage;
+  measure_point_t line_a;
+  measure_line_t line;
+  float line_base_m;
+  measure_point_t area[AREA_MAX_POINTS];
+  uint16_t area_count;
 } app_t;
+
+static void nav_steps(app_t *app, float distance_m, bool heading_valid,
+                      float heading_deg);
+static void nav_gps(app_t *app);
+static void nav_idle(app_t *app);
+static void nav_baro(app_t *app);
 
 static app_t app;
 
@@ -507,6 +618,9 @@ static uint32_t gps_service(app_t *app) {
   }
   if (updated != NEO6M_UPDATED_NONE) {
     gps_store_fix(app);
+  }
+  if (updated & NEO6M_UPDATED_GGA) {
+    nav_gps(app);
   }
   if (updated & NEO6M_UPDATED_RMC) {
     app->gps_received = true;
@@ -965,6 +1079,51 @@ static void imu_check_frames(app_t *app, float accel_norm_sum,
          (mean > 0.5f && mean < 1.5f) ? "" : " - unexpected frame layout!");
 }
 
+static bool walking_heading(app_t *app, float *heading_deg,
+                            ui_compass_ref_t *reference) {
+  if (!app->imu_ok || app->imu_error || !app->mag_ok || app->mag_error ||
+      !app->mag_filter_valid) {
+    return false;
+  }
+  attitude_output_t att;
+  attitude_output(&app->attitude, MAG_DECLINATION_DEG,
+                  COMPASS_MIN_HORIZONTAL_UT, &att);
+  if (!att.field_valid || !att.heading_valid) {
+    return false;
+  }
+  *heading_deg = att.heading_true_deg;
+  if (reference != NULL) {
+    *reference = (att.axis == ATTITUDE_AXIS_SCREEN) ? UI_COMPASS_REF_BACK
+                                                    : UI_COMPASS_REF_TOP;
+  }
+  return true;
+}
+
+static void log_step_peak(app_t *app, float dynamic_ms2, bool new_peak,
+                          uint8_t counted) {
+  static float raw_max = 0.0f;
+  float magnitude = fabsf(dynamic_ms2);
+  if (magnitude > raw_max) {
+    raw_max = magnitude;
+  }
+  if (!new_peak) {
+    return;
+  }
+  static const char *const results[] = {
+      [STEPS_PEAK_TOO_SOON] = "too soon",
+      [STEPS_PEAK_PENDING] = "pending",
+      [STEPS_PEAK_CONFIRMED] = "confirmed",
+      [STEPS_PEAK_WALKING] = "walking",
+  };
+  const steps_peak_t *p = &app->steps.last_peak;
+  printf("step t=%.2f pk=%.2f vl=%.2f rise=%.2f int=%.2f raw=%.1f "
+         "pend=%u +%u %s\n",
+         (double)p->time_s, (double)p->peak, (double)p->valley,
+         (double)p->rise_s, (double)p->interval_s, (double)raw_max,
+         (unsigned)p->pending, (unsigned)counted, results[p->result]);
+  raw_max = 0.0f;
+}
+
 static void imu_count_steps(app_t *app, const compass_vec_t *accel_g) {
   float up_g;
   if (app->attitude.down_valid) {
@@ -974,11 +1133,24 @@ static void imu_count_steps(app_t *app, const compass_vec_t *accel_g) {
     up_g = sqrtf(accel_g->x * accel_g->x + accel_g->y * accel_g->y +
                  accel_g->z * accel_g->z);
   }
+  float dynamic_ms2 = (up_g - 1.0f) * STANDARD_GRAVITY_MS2;
   float distance_m = 0.0f;
-  uint8_t steps =
-      steps_update(&app->steps, (up_g - 1.0f) * STANDARD_GRAVITY_MS2,
-                   IMU_SAMPLE_PERIOD_S, &distance_m);
+  uint32_t peaks_before = app->steps.last_peak.count;
+  uint8_t steps = steps_update(&app->steps, dynamic_ms2, IMU_SAMPLE_PERIOD_S,
+                               &distance_m);
+  if (steps > 0) {
+    float heading_deg = 0.0f;
+    bool heading_valid = walking_heading(app, &heading_deg, NULL);
+    if (trip_running(&app->trip)) {
+      pdr_add(&app->pdr, steps, distance_m, heading_valid, heading_deg);
+    }
+    nav_steps(app, distance_m, heading_valid, heading_deg);
+  }
   trip_add(&app->trip, steps, distance_m);
+  if (STEP_DEBUG_LOG) {
+    log_step_peak(app, dynamic_ms2,
+                  app->steps.last_peak.count != peaks_before, steps);
+  }
 }
 
 static void imu_drain_fifo(app_t *app) {
@@ -1041,6 +1213,8 @@ static void imu_drain_fifo(app_t *app) {
 static void nav_update(app_t *app) {
   imu_drain_fifo(app);
   mag_update(app);
+  nav_idle(app);
+  nav_baro(app);
 }
 
 static void imu_update(app_t *app) {
@@ -1110,21 +1284,22 @@ static void draw_imu_card(app_t *app) {
   ui_draw_imu_card(app->oled, &imu);
 }
 
+static ui_trip_state_t ui_trip_state(const trip_t *t) {
+  if (t->state == TRIP_RUNNING) {
+    return UI_TRIP_RUNNING;
+  }
+  return (t->state == TRIP_PAUSED) ? UI_TRIP_PAUSED : UI_TRIP_STOPPED;
+}
+
 static void draw_trip_card(app_t *app) {
   uint64_t now_us = time_us_64();
   const trip_t *t = &app->trip;
   bool walking = steps_walking(&app->steps);
   float speed_ms =
       walking ? app->steps.cadence_spm / 60.0f * app->steps.last_step_m : 0.0f;
-  ui_trip_state_t state = UI_TRIP_STOPPED;
-  if (t->state == TRIP_RUNNING) {
-    state = UI_TRIP_RUNNING;
-  } else if (t->state == TRIP_PAUSED) {
-    state = UI_TRIP_PAUSED;
-  }
   ui_trip_t trip = {
       .sensor_ok = app->imu_ok && !app->imu_error && app->imu_fifo_running,
-      .state = state,
+      .state = ui_trip_state(t),
       .elapsed_s = (uint32_t)(trip_elapsed_us(t, now_us) / 1000000u),
       .steps = t->steps,
       .distance_m = t->distance_m,
@@ -1136,6 +1311,24 @@ static void draw_trip_card(app_t *app) {
       .weinberg_k = app->steps.config.weinberg_k,
   };
   ui_draw_trip_card(app->oled, &trip);
+}
+
+static void draw_pdr_card(app_t *app) {
+  const pdr_t *p = &app->pdr;
+  ui_pdr_t pdr = {
+      .sensor_ok = app->imu_ok && !app->imu_error && app->imu_fifo_running,
+      .state = ui_trip_state(&app->trip),
+      .east_m = p->east_m,
+      .north_m = p->north_m,
+      .range_m = pdr_range_m(p),
+      .reference = UI_COMPASS_REF_BACK,
+      .path_m = app->trip.distance_m,
+      .steps_no_heading = p->steps_no_heading,
+      .mag_calibrated = app->mag_cal.valid,
+  };
+  pdr.bearing_valid = pdr_bearing_deg(p, PDR_MIN_RANGE_M, &pdr.bearing_deg);
+  pdr.heading_valid = walking_heading(app, &pdr.heading_deg, &pdr.reference);
+  ui_draw_pdr_card(app->oled, &pdr);
 }
 
 static void trip_ok(app_t *app) {
@@ -1153,7 +1346,915 @@ static void trip_long_ok(app_t *app) {
     return;
   }
   trip_reset(&app->trip);
+  pdr_reset(&app->pdr);
+  alt_reset_totals(&app->alt);
   set_status(app, "Trip reset", UI_COLOR_GRAY);
+}
+
+// ---------------------------------------------------------------------------
+// Navigation: GPS + steps fusion, barometric altitude
+// ---------------------------------------------------------------------------
+
+static bool nav_heading_ok(const app_t *app) {
+  return app->imu_ok && !app->imu_error && app->imu_fifo_running &&
+         app->mag_ok && !app->mag_error;
+}
+
+static void nav_steps(app_t *app, float distance_m, bool heading_valid,
+                      float heading_deg) {
+  app->track_m += distance_m;
+  alt_add_horizontal(&app->alt, distance_m);
+  app->steps_since_fix = true;
+  if (!heading_valid) {
+    fusion_step_unknown(&app->fusion, distance_m);
+    app->dr_steps_no_heading = true;
+    return;
+  }
+  float heading_rad = heading_deg * (float)(M_PI / 180.0);
+  float d_east = distance_m * sinf(heading_rad);
+  float d_north = distance_m * cosf(heading_rad);
+  fusion_predict(&app->fusion, d_east, d_north);
+  app->dr_east_m += d_east;
+  app->dr_north_m += d_north;
+}
+
+static void nav_gps(app_t *app) {
+  if (app->mode != MODE_MANUAL) {
+    return;
+  }
+  neo6m_data_t data;
+  neo6m_get_data(app->gps, &data);
+  if (!data.fix_valid || !data.position_valid) {
+    return;
+  }
+  float dt_s = 1.0f;
+  if (app->nav_fix_seen) {
+    dt_s = (float)ms_since(app->nav_fix_at) / 1000.0f;
+    if (dt_s > NAV_FIX_MAX_DT_S) {
+      dt_s = NAV_FIX_MAX_DT_S;
+    }
+  }
+  app->nav_fix_at = get_absolute_time();
+  app->nav_fix_seen = true;
+
+  float moving_m = 0.0f;
+  bool steps_possible = app->imu_ok && !app->imu_error && app->imu_fifo_running;
+  if (data.speed_valid && (!steps_possible || !app->steps_since_fix)) {
+    float speed_kmh = (float)data.speed_kmh_x10 / 10.0f;
+    if (!steps_possible || speed_kmh >= NAV_STEPLESS_MIN_KMH) {
+      moving_m = speed_kmh / MS_TO_KMH * dt_s;
+    }
+  }
+  float hdop = data.hdop_valid ? (float)data.hdop_x100 / 100.0f : 99.0f;
+  fusion_update_gps(&app->fusion, data.latitude_e7, data.longitude_e7, hdop,
+                    moving_m);
+  app->steps_since_fix = false;
+
+  if (data.altitude_valid && data.hdop_valid && hdop <= ALT_GPS_MAX_HDOP &&
+      data.satellites >= ALT_GPS_MIN_SATELLITES) {
+    alt_gps(&app->alt, (float)data.altitude_dm / 10.0f, dt_s);
+  }
+}
+
+static void nav_baro(app_t *app) {
+  if (!time_reached(app->baro_at)) {
+    return;
+  }
+  absolute_time_t now = get_absolute_time();
+  float dt_s = app->baro_seen
+                   ? (float)absolute_time_diff_us(app->baro_last, now) / 1e6f
+                   : 1.0f;
+  app->baro_last = now;
+  app->baro_seen = true;
+  app->baro_at = make_timeout_time_ms(BARO_PERIOD_MS);
+  float pressure_pa;
+  if (read_pressure(app->bme680, &pressure_pa)) {
+    alt_update(&app->alt, pressure_pa, dt_s, trip_running(&app->trip));
+  } else {
+    app->baro_at = make_timeout_time_ms(BARO_RETRY_MS);
+  }
+}
+
+static void nav_idle(app_t *app) {
+  absolute_time_t now = get_absolute_time();
+  if (app->nav_idle_seen) {
+    fusion_idle(&app->fusion,
+                (float)absolute_time_diff_us(app->nav_idle_at, now) / 1e6f);
+  }
+  app->nav_idle_at = now;
+  app->nav_idle_seen = true;
+}
+
+static measure_point_t nav_here(const app_t *app) {
+  return (measure_point_t){app->fusion.east_m, app->fusion.north_m};
+}
+
+static measure_point_t nav_dr_here(const app_t *app) {
+  return (measure_point_t){app->dr_east_m, app->dr_north_m};
+}
+
+static cards_source_t nav_source(const app_t *app) {
+  if (fusion_source(&app->fusion) == FUSION_SOURCE_GPS_PDR) {
+    return nav_heading_ok(app) ? CARDS_SOURCE_GPS_PDR : CARDS_SOURCE_GPS;
+  }
+  return nav_heading_ok(app) ? CARDS_SOURCE_PDR : CARDS_SOURCE_NONE;
+}
+
+// ---------------------------------------------------------------------------
+// Time helpers (RTC seconds since 2000-01-01 UTC)
+// ---------------------------------------------------------------------------
+
+static bool rtc_now(app_t *app, ds3231_datetime_t *utc, uint32_t *seconds) {
+  if (app->time_invalid ||
+      ds3231_read_datetime(app->ds3231, utc) != DS3231_OK) {
+    return false;
+  }
+  *seconds = datetime_to_seconds(utc, CENTURY_BASE);
+  return true;
+}
+
+static void seconds_to_datetime(uint32_t seconds, ds3231_datetime_t *out) {
+  *out = (ds3231_datetime_t){.day = 1, .month = 1, .year = 0};
+  while (seconds > 86400u * 365u) {
+    datetime_add_seconds(out, (int)(86400u * 365u), CENTURY_BASE);
+    seconds -= 86400u * 365u;
+  }
+  datetime_add_seconds(out, (int)seconds, CENTURY_BASE);
+}
+
+static int32_t local_offset_s(uint32_t utc_s) {
+  ds3231_datetime_t utc;
+  seconds_to_datetime(utc_s, &utc);
+  int32_t offset = TIMEZONE_STANDARD_OFFSET_SECONDS;
+  if (is_dst_active(utc.day, utc.month, (uint16_t)(CENTURY_BASE + utc.year),
+                    utc.hours)) {
+    offset += TIMEZONE_DST_OFFSET_SECONDS;
+  }
+  return offset;
+}
+
+static uint16_t local_minutes(int64_t utc_s) {
+  int64_t local = utc_s + local_offset_s((uint32_t)utc_s);
+  int64_t of_day = local % 86400;
+  if (of_day < 0) {
+    of_day += 86400;
+  }
+  return (uint16_t)(of_day / 60);
+}
+
+// ---------------------------------------------------------------------------
+// Waypoints
+// ---------------------------------------------------------------------------
+
+static waypoint_t waypoint_items[WP_FLASH_SLOTS];
+
+static void waypoints_start(app_t *app) {
+  wp_storage_t storage;
+  if (!wp_flash_storage(&storage)) {
+    printf("Waypoints: firmware overlaps the flash region\n");
+    app->wps_ok = false;
+    return;
+  }
+  waypoints_load(&app->wps, &storage, waypoint_items);
+  app->wps_ok = true;
+  app->wp_index = (app->wps.count > 0) ? (uint16_t)(app->wps.count - 1u) : 0;
+  printf("Waypoints: %u loaded, %u damaged, %u free\n", app->wps.count,
+         app->wps.damaged,
+         (unsigned)(app->wps.storage.slot_count - app->wps.next_slot));
+}
+
+static const waypoint_t *waypoint_by_id(const app_t *app, uint16_t id) {
+  for (uint16_t i = 0; i < app->wps.count; i++) {
+    if (app->wps.items[i].id == id) {
+      return &app->wps.items[i];
+    }
+  }
+  return NULL;
+}
+
+static bool waypoint_local(const app_t *app, const waypoint_t *wp,
+                           measure_point_t *p) {
+  if (wp->session == app->session) {
+    *p = (measure_point_t){wp->east_m, wp->north_m};
+    return true;
+  }
+  if ((wp->flags & WAYPOINT_HAS_LATLON) && app->fusion.origin.valid) {
+    geo_to_local(&app->fusion.origin, wp->lat_e7, wp->lon_e7, &p->east_m,
+                 &p->north_m);
+    return true;
+  }
+  return false;
+}
+
+static void format_e7(char *buffer, size_t size, int32_t value_e7) {
+  uint32_t magnitude =
+      (value_e7 < 0) ? (uint32_t)(-(int64_t)value_e7) : (uint32_t)value_e7;
+  snprintf(buffer, size, "%s%lu.%07lu", (value_e7 < 0) ? "-" : "",
+           (unsigned long)(magnitude / 10000000u),
+           (unsigned long)(magnitude % 10000000u));
+}
+
+static void waypoint_log(const waypoint_t *wp, const ds3231_datetime_t *utc,
+                         bool time_valid) {
+  char lat[16] = "";
+  char lon[16] = "";
+  char when[32] = "";
+  char alt[16] = "";
+  if (wp->flags & WAYPOINT_HAS_LATLON) {
+    format_e7(lat, sizeof(lat), wp->lat_e7);
+    format_e7(lon, sizeof(lon), wp->lon_e7);
+  }
+  if (time_valid) {
+    snprintf(when, sizeof(when), "20%02u-%02u-%02uT%02u:%02u:%02uZ",
+             utc->year, utc->month, utc->day, utc->hours, utc->minutes,
+             utc->seconds);
+  }
+  if (wp->flags & WAYPOINT_HAS_ALTITUDE) {
+    snprintf(alt, sizeof(alt), "%.1f", (double)wp->altitude_m);
+  }
+  char line[160];
+  int length = snprintf(line, sizeof(line),
+                        "#WP,%u,%s,%s,%s,%s,%.1f,%.1f,%.1f,%08lx\n", wp->id,
+                        when, lat, lon, alt, (double)wp->east_m,
+                        (double)wp->north_m, (double)wp->track_m,
+                        (unsigned long)wp->session);
+  if (length <= 0 || (size_t)length >= sizeof(line)) {
+    return;
+  }
+  printf("%s", line);
+  if (time_valid) {
+    sd_log_append(line, (size_t)length, utc, true,
+                  datetime_to_seconds(utc, CENTURY_BASE));
+  } else {
+    ds3231_datetime_t epoch = {.day = 1, .month = 1, .year = 0};
+    sd_log_append(line, (size_t)length, &epoch, false, 0);
+  }
+}
+
+static void waypoint_mark(app_t *app) {
+  if (!app->wps_ok) {
+    show_error(app, "WP flash error");
+    return;
+  }
+  if (waypoints_full(&app->wps)) {
+    show_error(app, "WP memory full");
+    return;
+  }
+  waypoint_t wp = {
+      .session = app->session,
+      .east_m = app->fusion.east_m,
+      .north_m = app->fusion.north_m,
+      .track_m = app->track_m,
+  };
+  if (fusion_lat_lon(&app->fusion, &wp.lat_e7, &wp.lon_e7)) {
+    wp.flags |= WAYPOINT_HAS_LATLON;
+  }
+  if (app->alt.valid) {
+    wp.altitude_m = alt_altitude_m(&app->alt);
+    wp.flags |= WAYPOINT_HAS_ALTITUDE;
+  }
+  ds3231_datetime_t utc = {0};
+  uint32_t now_s = 0;
+  bool time_valid = rtc_now(app, &utc, &now_s);
+  if (time_valid) {
+    wp.utc_s = now_s;
+    wp.flags |= WAYPOINT_HAS_TIME;
+  }
+  if (!waypoints_add(&app->wps, &wp)) {
+    show_error(app, "WP write error");
+    return;
+  }
+  app->wp_index = (uint16_t)(app->wps.count - 1u);
+  waypoint_log(&wp, &utc, time_valid);
+  char text[UI_COLUMNS + 1];
+  snprintf(text, sizeof(text), "WP %u saved", wp.id);
+  set_status(app, text, UI_COLOR_GREEN);
+}
+
+static void waypoints_erase(app_t *app) {
+  if (!app->wps_ok) {
+    return;
+  }
+  bool ok = waypoints_clear(&app->wps);
+  app->wp_index = 0;
+  printf("Waypoints cleared%s\n", ok ? "" : " (erase error)");
+  set_status(app, ok ? "WP cleared" : "WP erase error",
+             ok ? UI_COLOR_YELLOW : UI_COLOR_RED);
+}
+
+// ---------------------------------------------------------------------------
+// Select mode (BOTTOM buttons = up / down) and confirmations
+// ---------------------------------------------------------------------------
+
+static void confirm_request(app_t *app, confirm_action_t action,
+                            const char *text) {
+  app->confirm = action;
+  app->confirm_deadline = make_timeout_time_ms(CONFIRM_MS);
+  set_status(app, text, UI_COLOR_YELLOW);
+}
+
+static bool confirm_pending(app_t *app, confirm_action_t action) {
+  if (app->confirm != action) {
+    return false;
+  }
+  if (time_reached(app->confirm_deadline)) {
+    app->confirm = CONFIRM_NONE;
+    return false;
+  }
+  return true;
+}
+
+static uint16_t select_entries(const app_t *app) {
+  switch (app->select) {
+  case SELECT_WPT:
+    return (uint16_t)(app->wps.count + 1u);
+  case SELECT_DIST_A:
+  case SELECT_DIST_B:
+    return (uint16_t)(app->wps.count + 1u);
+  default:
+    return 0;
+  }
+}
+
+static void select_move(app_t *app, int step) {
+  uint16_t n = select_entries(app);
+  if (n == 0) {
+    return;
+  }
+  app->select_index = (uint16_t)((app->select_index + n + step) % n);
+  app->refresh_now = true;
+}
+
+// ---------------------------------------------------------------------------
+// Distance tool (two points, each "here", a mark or a waypoint)
+// ---------------------------------------------------------------------------
+
+static tool_point_t point_mark_here(const app_t *app) {
+  return (tool_point_t){
+      .kind = POINT_MARK,
+      .pos = nav_here(app),
+      .alt_valid = app->alt.valid,
+      .alt_m = alt_altitude_m(&app->alt),
+      .track_m = app->track_m,
+  };
+}
+
+static bool point_resolve(const app_t *app, const tool_point_t *spec,
+                          resolved_point_t *out) {
+  *out = (resolved_point_t){0};
+  switch (spec->kind) {
+  case POINT_HERE:
+    out->pos = nav_here(app);
+    out->alt_valid = app->alt.valid;
+    out->alt_m = alt_altitude_m(&app->alt);
+    out->track_valid = true;
+    out->track_m = app->track_m;
+    return true;
+  case POINT_MARK:
+    out->pos = spec->pos;
+    out->alt_valid = spec->alt_valid;
+    out->alt_m = spec->alt_m;
+    out->track_valid = true;
+    out->track_m = spec->track_m;
+    return true;
+  case POINT_WAYPOINT: {
+    const waypoint_t *wp = waypoint_by_id(app, spec->wp_id);
+    if (wp == NULL || !waypoint_local(app, wp, &out->pos)) {
+      return false;
+    }
+    out->alt_valid = (wp->flags & WAYPOINT_HAS_ALTITUDE) != 0;
+    out->alt_m = wp->altitude_m;
+    out->track_valid = wp->session == app->session;
+    out->track_m = wp->track_m;
+    return true;
+  }
+  default:
+    return false;
+  }
+}
+
+static void point_label(const tool_point_t *p, char *buffer, size_t size) {
+  switch (p->kind) {
+  case POINT_HERE:
+    snprintf(buffer, size, "here");
+    break;
+  case POINT_MARK:
+    snprintf(buffer, size, "mark");
+    break;
+  case POINT_WAYPOINT:
+    snprintf(buffer, size, "WP%u", p->wp_id);
+    break;
+  default:
+    snprintf(buffer, size, "---");
+    break;
+  }
+}
+
+static tool_point_t dist_entry(const app_t *app, uint16_t index, bool for_a) {
+  if (index == 0 || index > app->wps.count) {
+    if (for_a) {
+      return point_mark_here(app);
+    }
+    return (tool_point_t){.kind = POINT_HERE};
+  }
+  return (tool_point_t){.kind = POINT_WAYPOINT,
+                        .wp_id = app->wps.items[index - 1u].id};
+}
+
+static void dist_ok(app_t *app) {
+  if (app->select == SELECT_DIST_A) {
+    app->dist_a = dist_entry(app, app->select_index, true);
+    app->select = SELECT_DIST_B;
+    app->select_index = 0;
+    return;
+  }
+  if (app->select == SELECT_DIST_B) {
+    app->dist_b = dist_entry(app, app->select_index, false);
+    app->select = SELECT_NONE;
+    app->dist_stage = (app->dist_b.kind == POINT_HERE) ? 1 : 2;
+    return;
+  }
+  if (app->dist_stage == 1) {
+    app->dist_b = point_mark_here(app);
+    app->dist_stage = 2;
+    set_status(app, "B marked", UI_COLOR_GREEN);
+    return;
+  }
+  app->dist_a = point_mark_here(app);
+  app->dist_b = (tool_point_t){.kind = POINT_HERE};
+  app->dist_stage = 1;
+  set_status(app, "A marked", UI_COLOR_GREEN);
+}
+
+static void draw_dist_card(app_t *app) {
+  cards_dist_t c = {.selecting = 0};
+  tool_point_t a = app->dist_a;
+  tool_point_t b = app->dist_b;
+  if (app->select == SELECT_DIST_A) {
+    a = dist_entry(app, app->select_index, true);
+    if (app->select_index == 0) {
+      a.kind = POINT_HERE;
+    }
+    c.selecting = 1;
+  } else if (app->select == SELECT_DIST_B) {
+    b = dist_entry(app, app->select_index, false);
+    c.selecting = 2;
+  }
+  point_label(&a, c.a_label, sizeof(c.a_label));
+  point_label(&b, c.b_label, sizeof(c.b_label));
+  resolved_point_t ra, rb;
+  if (a.kind != POINT_NONE && point_resolve(app, &a, &ra) &&
+      point_resolve(app, &b, &rb)) {
+    c.valid = true;
+    float de = rb.pos.east_m - ra.pos.east_m;
+    float dn = rb.pos.north_m - ra.pos.north_m;
+    c.horizontal_m = sqrtf(de * de + dn * dn);
+    c.bearing_deg = geo_bearing_deg(de, dn);
+    c.dalt_valid = ra.alt_valid && rb.alt_valid;
+    c.dalt_m = rb.alt_m - ra.alt_m;
+    c.track_valid = ra.track_valid && rb.track_valid;
+    c.track_m = fabsf(rb.track_m - ra.track_m);
+  }
+  if (c.selecting) {
+    c.guide = "OK:pick BACK:x";
+  } else if (app->dist_stage == 1) {
+    c.guide = "B = here (live)";
+  }
+  ui_row_t rows[UI_CONTENT_ROWS];
+  cards_dist(&c, rows);
+  ui_draw_rows(app->oled, rows);
+}
+
+// ---------------------------------------------------------------------------
+// Ruler line (steps only: GPS jumps would tilt a short A-B baseline)
+// ---------------------------------------------------------------------------
+
+static void line_ok(app_t *app) {
+  if (!nav_heading_ok(app)) {
+    show_error(app, "Needs IMU+mag");
+    return;
+  }
+  switch (app->line_stage) {
+  case CARDS_LINE_SET_A:
+    app->line_a = nav_dr_here(app);
+    app->line_stage = CARDS_LINE_SET_B;
+    set_status(app, "A set", UI_COLOR_GREEN);
+    break;
+  case CARDS_LINE_SET_B:
+    if (!measure_line_from(app->line_a, nav_dr_here(app), LINE_MIN_BASE_M,
+                           &app->line)) {
+      show_error(app, "Walk further");
+      break;
+    }
+    app->line_base_m = measure_distance_m(app->line_a, nav_dr_here(app));
+    app->line_stage = CARDS_LINE_ACTIVE;
+    set_status(app, "Line set", UI_COLOR_GREEN);
+    break;
+  default:
+    break;
+  }
+}
+
+static void draw_line_card(app_t *app) {
+  cards_line_t c = {
+      .stage = app->line_stage,
+      .position_ok = nav_heading_ok(app),
+      .min_base_m = LINE_MIN_BASE_M,
+      .bearing_deg = app->line.bearing_deg,
+      .base_m = app->line_base_m,
+  };
+  measure_point_t here = nav_dr_here(app);
+  c.from_a_m = measure_distance_m(app->line_a, here);
+  if (app->line_stage == CARDS_LINE_ACTIVE) {
+    measure_line_project(&app->line, here, &c.along_m, &c.offset_m);
+  }
+  c.heading_valid = walking_heading(app, &c.heading_deg, NULL);
+  ui_row_t rows[UI_CONTENT_ROWS];
+  cards_line(&c, rows);
+  ui_draw_rows(app->oled, rows);
+}
+
+// ---------------------------------------------------------------------------
+// Area (own points, RAM only)
+// ---------------------------------------------------------------------------
+
+static void area_add(app_t *app) {
+  if (app->area_count >= AREA_MAX_POINTS) {
+    show_error(app, "Area full");
+    return;
+  }
+  app->area[app->area_count++] = nav_here(app);
+  char text[UI_COLUMNS + 1];
+  snprintf(text, sizeof(text), "Point %u added", app->area_count);
+  set_status(app, text, UI_COLOR_GREEN);
+}
+
+static void draw_area_card(app_t *app) {
+  cards_area_t c = {
+      .count = app->area_count,
+      .max = AREA_MAX_POINTS,
+      .source = nav_source(app),
+  };
+  c.area_m2 = measure_polygon_area_m2(app->area, app->area_count);
+  c.perimeter_m = measure_polygon_perimeter_m(app->area, app->area_count);
+  c.crossing = measure_polygon_self_intersects(app->area, app->area_count);
+  if (app->area_count >= 2) {
+    c.last_valid = true;
+    c.last_edge_m = measure_distance_m(app->area[app->area_count - 2u],
+                                       app->area[app->area_count - 1u]);
+  }
+  if (app->area_count >= 1) {
+    measure_point_t here = nav_here(app);
+    c.here_valid = true;
+    c.to_first_m = measure_distance_m(here, app->area[0]);
+    if (app->area_count < AREA_MAX_POINTS) {
+      measure_point_t with_here[AREA_MAX_POINTS];
+      for (uint16_t i = 0; i < app->area_count; i++) {
+        with_here[i] = app->area[i];
+      }
+      with_here[app->area_count] = here;
+      c.area_with_here_m2 = measure_polygon_area_m2(
+          with_here, (uint16_t)(app->area_count + 1u));
+    }
+  }
+  ui_row_t rows[UI_CONTENT_ROWS];
+  cards_area(&c, rows);
+  ui_draw_rows(app->oled, rows);
+}
+
+// ---------------------------------------------------------------------------
+// NAV, ALT, WPT and SUN cards
+// ---------------------------------------------------------------------------
+
+static void draw_nav_card(app_t *app) {
+  cards_nav_t c = {
+      .source = nav_source(app),
+      .sigma_m = fusion_sigma_m(&app->fusion),
+      .gps_on = app->gps_enabled,
+      .gps_used = app->fusion.updates,
+      .gps_rejected = app->fusion.rejected,
+      .altitude_valid = app->alt.valid,
+      .altitude_gps_ref = app->alt.offset_valid,
+      .altitude_m = alt_altitude_m(&app->alt),
+      .track_m = app->track_m,
+  };
+  c.latlon_valid = fusion_lat_lon(&app->fusion, &c.lat_e7, &c.lon_e7);
+  if (app->gps_enabled && gps_is_fresh(app)) {
+    neo6m_data_t live;
+    neo6m_get_data(app->gps, &live);
+    c.gps_fix = live.fix_valid && live.position_valid;
+    c.satellites = live.satellites;
+    c.hdop = live.hdop_valid ? (float)live.hdop_x100 / 100.0f : 99.9f;
+  }
+  c.heading_valid = walking_heading(app, &c.heading_deg, NULL);
+  ui_row_t rows[UI_CONTENT_ROWS];
+  cards_nav(&c, rows);
+  ui_draw_rows(app->oled, rows);
+}
+
+static void draw_alt_card(app_t *app) {
+  cards_alt_t c = {
+      .state = ui_trip_state(&app->trip),
+      .valid = app->alt.valid,
+      .altitude_m = alt_altitude_m(&app->alt),
+      .gps_ref = app->alt.offset_valid,
+      .pressure_hpa = app->alt.pressure_pa / 100.0f,
+      .ascent_m = app->alt.ascent_m,
+      .descent_m = app->alt.descent_m,
+      .horizontal_m = app->trip.distance_m,
+      .slope_m = app->trip.distance_m + app->alt.slope_extra_m,
+      .threshold_m = app->alt.config.threshold_m,
+  };
+  ui_row_t rows[UI_CONTENT_ROWS];
+  cards_alt(&c, rows);
+  ui_draw_rows(app->oled, rows);
+}
+
+static void draw_wpt_card(app_t *app) {
+  cards_wpt_t c = {
+      .storage_ok = app->wps_ok,
+      .count = app->wps.count,
+      .free_slots = app->wps_ok ? (uint16_t)(app->wps.storage.slot_count -
+                                             app->wps.next_slot)
+                                : 0,
+      .selecting = app->select == SELECT_WPT,
+  };
+  uint16_t index = app->wp_index;
+  if (c.selecting) {
+    if (app->select_index >= app->wps.count) {
+      c.clear_selected = true;
+    }
+    index = app->select_index;
+  }
+  if (index < app->wps.count && !c.clear_selected) {
+    const waypoint_t *wp = &app->wps.items[index];
+    c.has_item = true;
+    c.id = wp->id;
+    c.latlon_valid = (wp->flags & WAYPOINT_HAS_LATLON) != 0;
+    c.lat_e7 = wp->lat_e7;
+    c.lon_e7 = wp->lon_e7;
+    c.altitude_valid = (wp->flags & WAYPOINT_HAS_ALTITUDE) != 0;
+    c.altitude_m = wp->altitude_m;
+    measure_point_t p;
+    if (waypoint_local(app, wp, &p)) {
+      measure_point_t here = nav_here(app);
+      float de = p.east_m - here.east_m;
+      float dn = p.north_m - here.north_m;
+      c.relative_valid = true;
+      c.distance_m = sqrtf(de * de + dn * dn);
+      c.bearing_deg = geo_bearing_deg(de, dn);
+      float heading;
+      if (c.distance_m >= PDR_MIN_RANGE_M &&
+          walking_heading(app, &heading, NULL)) {
+        c.turn_valid = true;
+        c.turn_deg = geo_angle_delta(c.bearing_deg, heading);
+      }
+    }
+    if (c.altitude_valid && app->alt.valid) {
+      c.dalt_valid = true;
+      c.dalt_m = wp->altitude_m - alt_altitude_m(&app->alt);
+    }
+    if (wp->flags & WAYPOINT_HAS_TIME) {
+      ds3231_datetime_t local;
+      seconds_to_datetime((uint32_t)(wp->utc_s + local_offset_s(wp->utc_s)),
+                          &local);
+      c.time_valid = true;
+      c.hour = local.hours;
+      c.minute = local.minutes;
+      c.day = local.day;
+      c.month = local.month;
+    }
+  }
+  ui_row_t rows[UI_CONTENT_ROWS];
+  cards_wpt(&c, rows);
+  ui_draw_rows(app->oled, rows);
+}
+
+static void wpt_ok(app_t *app) {
+  if (confirm_pending(app, CONFIRM_WPT_CLEAR)) {
+    app->confirm = CONFIRM_NONE;
+    waypoints_erase(app);
+    return;
+  }
+  if (app->select == SELECT_WPT) {
+    app->select = SELECT_NONE;
+    if (app->select_index >= app->wps.count) {
+      if (app->wps.count > 0) {
+        confirm_request(app, CONFIRM_WPT_CLEAR, "OK: clear all?");
+      }
+      return;
+    }
+    app->wp_index = app->select_index;
+    return;
+  }
+  waypoint_mark(app);
+}
+
+static bool sun_position_source(app_t *app, double *lat, double *lon,
+                                const char **source) {
+  int32_t lat_e7, lon_e7;
+  if (fusion_lat_lon(&app->fusion, &lat_e7, &lon_e7)) {
+    *source = "GPS+steps";
+  } else if (app->gps_has_fix) {
+    lat_e7 = app->gps_fix.latitude_e7;
+    lon_e7 = app->gps_fix.longitude_e7;
+    *source = "last fix";
+  } else {
+    const waypoint_t *found = NULL;
+    for (uint16_t i = app->wps.count; i > 0; i--) {
+      if (app->wps.items[i - 1u].flags & WAYPOINT_HAS_LATLON) {
+        found = &app->wps.items[i - 1u];
+        break;
+      }
+    }
+    if (found == NULL) {
+      return false;
+    }
+    lat_e7 = found->lat_e7;
+    lon_e7 = found->lon_e7;
+    *source = "waypoint";
+  }
+  *lat = (double)lat_e7 / 1e7;
+  *lon = (double)lon_e7 / 1e7;
+  return true;
+}
+
+static cards_sun_status_t sun_status(sun_event_status_t status) {
+  switch (status) {
+  case SUN_EVENT_ALWAYS_UP:
+    return CARDS_SUN_ALWAYS_UP;
+  case SUN_EVENT_ALWAYS_DOWN:
+    return CARDS_SUN_ALWAYS_DOWN;
+  default:
+    return CARDS_SUN_OK;
+  }
+}
+
+static void draw_sun_card(app_t *app) {
+  cards_sun_t c = {0};
+  ds3231_datetime_t utc;
+  uint32_t now_s = 0;
+  double lat = 0.0, lon = 0.0;
+  c.time_valid = rtc_now(app, &utc, &now_s);
+  c.position_valid = sun_position_source(app, &lat, &lon, &c.position_source);
+  if (c.time_valid && c.position_valid) {
+    int32_t offset = local_offset_s(now_s);
+    int64_t local_now = (int64_t)now_s + offset;
+    int64_t local_noon = local_now - local_now % 86400 + 43200;
+    sun_day_t day;
+    sun_day(local_noon - offset, lat, lon, &day);
+    c.status = sun_status(day.status);
+    c.civil_status = sun_status(day.civil_status);
+    c.noon_min = local_minutes(day.noon_s);
+    if (day.status == SUN_EVENT_OK) {
+      c.rise_min = local_minutes(day.rise_s);
+      c.set_min = local_minutes(day.set_s);
+      c.day_length_min = (uint16_t)((day.set_s - day.rise_s) / 60);
+      int64_t target = 0;
+      if ((int64_t)now_s < day.rise_s) {
+        target = day.rise_s;
+      } else if ((int64_t)now_s < day.set_s) {
+        target = day.set_s;
+        c.to_set = true;
+      } else {
+        sun_day_t next;
+        sun_day(local_noon - offset + 86400, lat, lon, &next);
+        if (next.status == SUN_EVENT_OK) {
+          target = next.rise_s;
+        }
+      }
+      if (target > (int64_t)now_s) {
+        c.countdown_valid = true;
+        c.countdown_min = (uint32_t)((target - (int64_t)now_s + 59) / 60);
+      }
+    }
+    if (day.civil_status == SUN_EVENT_OK) {
+      c.dawn_min = local_minutes(day.dawn_s);
+      c.dusk_min = local_minutes(day.dusk_s);
+    }
+    double elevation, azimuth;
+    sun_position(now_s, lat, lon, &elevation, &azimuth);
+    c.elevation_deg = (float)elevation;
+    c.azimuth_deg = (float)azimuth;
+  }
+  ui_row_t rows[UI_CONTENT_ROWS];
+  cards_sun(&c, rows);
+  ui_draw_rows(app->oled, rows);
+}
+
+static bool tools_handle_select(app_t *app, uint32_t pressed) {
+  if (app->select == SELECT_NONE) {
+    return false;
+  }
+  bool on_card =
+      (app->select == SELECT_WPT && app->card == CARD_WPT) ||
+      ((app->select == SELECT_DIST_A || app->select == SELECT_DIST_B) &&
+       app->card == CARD_DIST);
+  if (!on_card) {
+    app->select = SELECT_NONE;
+    return false;
+  }
+  if (pressed & BUTTON_MASK(BUTTON_NEXT_CARD)) {
+    select_move(app, 1);
+  }
+  if (pressed & BUTTON_MASK(BUTTON_PREV_CARD)) {
+    select_move(app, -1);
+  }
+  if (pressed & BUTTON_MASK(BUTTON_BACK)) {
+    app->select = SELECT_NONE;
+    app->refresh_now = true;
+  }
+  if (pressed & BUTTON_MASK(BUTTON_OK)) {
+    if (app->card == CARD_WPT) {
+      wpt_ok(app);
+    } else {
+      dist_ok(app);
+    }
+    app->refresh_now = true;
+  }
+  return true;
+}
+
+static void tools_long_ok(app_t *app) {
+  switch (app->card) {
+  case CARD_WPT:
+    if (app->wps_ok) {
+      app->select = SELECT_WPT;
+      app->select_index = app->wp_index;
+      app->refresh_now = true;
+    }
+    break;
+  case CARD_DIST:
+    app->select = SELECT_DIST_A;
+    app->select_index = 0;
+    app->refresh_now = true;
+    break;
+  case CARD_LINE:
+    app->line_stage = CARDS_LINE_SET_A;
+    set_status(app, "Line reset", UI_COLOR_GRAY);
+    break;
+  case CARD_AREA:
+    if (app->area_count > 0) {
+      confirm_request(app, CONFIRM_AREA_CLEAR, "OK: clear area?");
+    }
+    break;
+  default:
+    break;
+  }
+}
+
+static void tools_ok(app_t *app) {
+  switch (app->card) {
+  case CARD_WPT:
+    wpt_ok(app);
+    break;
+  case CARD_DIST:
+    dist_ok(app);
+    break;
+  case CARD_LINE:
+    line_ok(app);
+    break;
+  case CARD_AREA:
+    if (confirm_pending(app, CONFIRM_AREA_CLEAR)) {
+      app->confirm = CONFIRM_NONE;
+      app->area_count = 0;
+      set_status(app, "Area cleared", UI_COLOR_YELLOW);
+    } else {
+      area_add(app);
+    }
+    break;
+  default:
+    break;
+  }
+  app->refresh_now = true;
+}
+
+static const char *tools_hint(const app_t *app) {
+  switch (app->card) {
+  case CARD_WPT:
+    if (app->select == SELECT_WPT) {
+      return "</>:pick OK:go";
+    }
+    return "OK:mark hld:sel";
+  case CARD_DIST:
+    if (app->select != SELECT_NONE) {
+      return "</>:pick OK:go";
+    }
+    return (app->dist_stage == 1) ? "OK:B hold:sel" : "OK:A hold:sel";
+  case CARD_LINE:
+    switch (app->line_stage) {
+    case CARDS_LINE_SET_A:
+      return "OK: set A";
+    case CARDS_LINE_SET_B:
+      return "OK:B hold:rst";
+    default:
+      return "Hold OK: reset";
+    }
+  case CARD_AREA:
+    return "OK:add hold:clr";
+  default:
+    return "";
+  }
 }
 
 static uint32_t fast_refresh_ms(const app_t *app) {
@@ -1162,6 +2263,15 @@ static uint32_t fast_refresh_ms(const app_t *app) {
     return app->mag_calibrating ? COMPASS_CAL_REFRESH_MS : COMPASS_REFRESH_MS;
   case CARD_IMU:
     return IMU_REFRESH_MS;
+  case CARD_PDR:
+    return PDR_REFRESH_MS;
+  case CARD_NAV:
+  case CARD_WPT:
+  case CARD_DIST:
+  case CARD_AREA:
+    return TOOLS_REFRESH_MS;
+  case CARD_LINE:
+    return LINE_REFRESH_MS;
   default:
     return 0;
   }
@@ -1276,7 +2386,14 @@ static const char *card_hint(const app_t *app, uint16_t *color) {
       return "OK: calibrate";
     }
     return "OK: recalibrate";
+  case CARD_WPT:
+  case CARD_DIST:
+  case CARD_LINE:
+  case CARD_AREA:
+    return tools_hint(app);
   case CARD_TRIP:
+  case CARD_PDR:
+  case CARD_ALT:
     switch (app->trip.state) {
     case TRIP_RUNNING:
       return "OK: pause";
@@ -1356,8 +2473,32 @@ static void draw_current_card(app_t *app, bool scheduled) {
   case CARD_COMPASS:
     draw_compass_card(app);
     break;
+  case CARD_NAV:
+    draw_nav_card(app);
+    break;
+  case CARD_ALT:
+    draw_alt_card(app);
+    break;
+  case CARD_WPT:
+    draw_wpt_card(app);
+    break;
+  case CARD_DIST:
+    draw_dist_card(app);
+    break;
+  case CARD_LINE:
+    draw_line_card(app);
+    break;
+  case CARD_AREA:
+    draw_area_card(app);
+    break;
+  case CARD_SUN:
+    draw_sun_card(app);
+    break;
   case CARD_TRIP:
     draw_trip_card(app);
+    break;
+  case CARD_PDR:
+    draw_pdr_card(app);
     break;
   case CARD_IMU:
     draw_imu_card(app);
@@ -1533,7 +2674,15 @@ static void handle_ok(app_t *app) {
     }
     break;
   case CARD_TRIP:
+  case CARD_PDR:
+  case CARD_ALT:
     trip_ok(app);
+    break;
+  case CARD_WPT:
+  case CARD_DIST:
+  case CARD_LINE:
+  case CARD_AREA:
+    tools_ok(app);
     break;
   case CARD_BACKPACK:
     buttons_wait_release(BUTTON_OK);
@@ -1545,6 +2694,10 @@ static void handle_ok(app_t *app) {
 }
 
 static void handle_manual_buttons(app_t *app, uint32_t pressed) {
+  if (tools_handle_select(app, pressed)) {
+    pressed &= ~(BUTTON_MASK(BUTTON_NEXT_CARD) | BUTTON_MASK(BUTTON_PREV_CARD) |
+                 BUTTON_MASK(BUTTON_BACK) | BUTTON_MASK(BUTTON_OK));
+  }
   if (pressed & BUTTON_LONG_MASK(BUTTON_BACK)) {
     gps_set_enabled(app, !app->gps_enabled);
   }
@@ -1554,8 +2707,13 @@ static void handle_manual_buttons(app_t *app, uint32_t pressed) {
   if (pressed & BUTTON_MASK(BUTTON_OK)) {
     handle_ok(app);
   }
-  if ((pressed & BUTTON_LONG_MASK(BUTTON_OK)) && app->card == CARD_TRIP) {
-    trip_long_ok(app);
+  if (pressed & BUTTON_LONG_MASK(BUTTON_OK)) {
+    if (app->card == CARD_TRIP || app->card == CARD_PDR ||
+        app->card == CARD_ALT) {
+      trip_long_ok(app);
+    } else {
+      tools_long_ok(app);
+    }
   }
   if (app->mode != MODE_MANUAL) {
     return;
@@ -1563,10 +2721,12 @@ static void handle_manual_buttons(app_t *app, uint32_t pressed) {
   if (pressed & BUTTON_MASK(BUTTON_NEXT_CARD)) {
     app->card = (card_t)((app->card + 1) % CARD_COUNT);
     app->clear_screen = true;
+    app->confirm = CONFIRM_NONE;
   }
   if (pressed & BUTTON_MASK(BUTTON_PREV_CARD)) {
     app->card = (card_t)((app->card + CARD_COUNT - 1) % CARD_COUNT);
     app->clear_screen = true;
+    app->confirm = CONFIRM_NONE;
   }
   if (app->card != CARD_COMPASS) {
     cancel_mag_calibration(app);
@@ -1772,6 +2932,11 @@ int main() {
   steps_config.weinberg_k = STEP_WEINBERG_K;
   steps_init(&app.steps, &steps_config);
   trip_reset(&app.trip);
+  pdr_reset(&app.pdr);
+  fusion_init(&app.fusion, NULL);
+  alt_init(&app.alt, NULL);
+  app.session = get_rand_32();
+  waypoints_start(&app);
   app.mag_ok = mag_init(&app);
   app.imu_ok = imu_init(&app);
   gps_request(&app, GPS_CMD_CONFIGURE);

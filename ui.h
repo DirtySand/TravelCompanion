@@ -5,6 +5,7 @@
 #include "drivers/ds3231/ds3231.h"
 #include "drivers/neo6m/neo6m.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define UI_SCREEN_SIZE 128
@@ -119,11 +120,26 @@ typedef struct {
 } ui_trip_t;
 
 typedef struct {
+  bool sensor_ok;
+  ui_trip_state_t state;
+  float east_m;
+  float north_m;
+  float range_m;
+  bool bearing_valid;
+  float bearing_deg;
+  bool heading_valid;
+  float heading_deg;
+  ui_compass_ref_t reference;
+  float path_m;
+  uint32_t steps_no_heading;
+  bool mag_calibrated;
+} ui_pdr_t;
+
+typedef struct {
   const char *text;
   uint16_t color;
 } ui_tag_t;
 
-// Pixel shift of the whole layout (burn-in mitigation), in pixels.
 void ui_set_shift(uint8_t dx, uint8_t dy);
 
 void ui_clear(ssd1351_t *oled);
@@ -142,6 +158,18 @@ void ui_draw_satellite_card(ssd1351_t *oled, const ui_gps_t *gps);
 void ui_draw_compass_card(ssd1351_t *oled, const ui_compass_t *compass);
 void ui_draw_imu_card(ssd1351_t *oled, const ui_imu_t *imu);
 void ui_draw_trip_card(ssd1351_t *oled, const ui_trip_t *trip);
+void ui_draw_pdr_card(ssd1351_t *oled, const ui_pdr_t *pdr);
+typedef struct {
+  char text[UI_COLUMNS + 1];
+  uint16_t color;
+} ui_row_t;
+
+void ui_draw_rows(ssd1351_t *oled, const ui_row_t *rows);
+
+void ui_format_distance(char *buffer, size_t size, float metres);
+unsigned ui_round_degrees(float degrees);
+const char *ui_cardinal(float degrees);
+
 void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
                            uint16_t interval_seconds);
 void ui_draw_backpack_view(ssd1351_t *oled, const ds3231_datetime_t *utc,
