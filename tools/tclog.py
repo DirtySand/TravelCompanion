@@ -4,6 +4,8 @@
   keygen   create the recipient key pair; writes the private key file and
            the firmware header with the public key (log_pubkey.h)
   decrypt  decrypt one or more .TCL files from the SD card to CSV
+           (waypoint lines "#WP,..." go to <output>_waypoints.csv when -o
+           is given, otherwise they are printed with the rest)
 
 File format: see log_crypto.h in the firmware.
 Requires PyNaCl:  python3 -m pip install pynacl
@@ -58,6 +60,36 @@ def load_secret(path):
     return secret
 
 
+WAYPOINT_PREFIX = "#WP,"
+WAYPOINT_HEADER = "id,utc,lat,lon,alt_m,east_m,north_m,track_m,session\n"
+
+
+class LineRouter:
+    """Splits the decrypted text into lines; waypoint lines go elsewhere."""
+
+    def __init__(self, out, waypoints):
+        self.out = out
+        self.waypoints = waypoints
+        self.pending = ""
+
+    def write(self, text):
+        self.pending += text
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            self._route(line + "\n")
+
+    def _route(self, line):
+        if self.waypoints is not None and line.startswith(WAYPOINT_PREFIX):
+            self.waypoints.write(line[len(WAYPOINT_PREFIX):])
+        else:
+            self.out.write(line)
+
+    def close(self):
+        if self.pending:
+            self._route(self.pending)
+            self.pending = ""
+
+
 def decrypt_file(path, secret, out):
     with open(path, "rb") as f:
         data = f.read()
@@ -104,13 +136,21 @@ def decrypt_file(path, secret, out):
 def decrypt(args):
     secret = load_secret(args.private_key)
     out = open(args.output, "w", newline="") if args.output else sys.stdout
+    waypoints = None
+    if args.output:
+        stem, _ = os.path.splitext(args.output)
+        waypoints = open(stem + "_waypoints.csv", "w", newline="")
+        waypoints.write(WAYPOINT_HEADER)
+    router = LineRouter(out, waypoints)
     ok = True
     try:
         for path in args.files:
-            ok = decrypt_file(path, secret, out) and ok
+            ok = decrypt_file(path, secret, router) and ok
+        router.close()
     finally:
         if args.output:
             out.close()
+            waypoints.close()
     sys.exit(0 if ok else 1)
 
 
