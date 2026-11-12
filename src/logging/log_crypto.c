@@ -21,7 +21,6 @@ void log_crypto_begin(log_crypto_t *ctx,
                       const uint8_t seed[LOG_CRYPTO_SEED_SIZE]) {
   memset(ctx, 0, sizeof(*ctx));
 
-  // Whiten the raw entropy: 32 B ephemeral secret + 16 B nonce prefix.
   uint8_t material[SEED_HASH_SIZE];
   crypto_blake2b(material, sizeof(material), seed, LOG_CRYPTO_SEED_SIZE);
   uint8_t *ephemeral_secret = material;

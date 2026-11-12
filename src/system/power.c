@@ -45,7 +45,6 @@ uint32_t power_dormant_until(uint8_t rtc_int_pin, uint32_t button_pin_mask) {
   }
 
   set_wake_sources(rtc_int_pin, button_pin_mask, false);
-  // Edge latches survive disabling; clear them for the next dormant entry.
   for (uint8_t pin = 0; pin < GPIO_COUNT; pin++) {
     if (button_pin_mask & POWER_PIN_MASK(pin)) {
       gpio_acknowledge_irq(pin, GPIO_IRQ_EDGE_FALL);

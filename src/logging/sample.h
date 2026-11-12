@@ -21,13 +21,13 @@ typedef enum {
 } sample_mode_t;
 
 typedef struct {
-  ds3231_datetime_t utc; // scheduled sample time (RTC alarm)
+  ds3231_datetime_t utc;
   bool time_valid;
   sample_mode_t mode;
-  bool climate_valid; // SHT40
+  bool climate_valid;
   float temperature_c;
   float humidity_pct;
-  bool pressure_valid; // BME680
+  bool pressure_valid;
   float pressure_pa;
   sample_gps_t gps;
   int32_t latitude_e7;
@@ -43,7 +43,6 @@ typedef struct {
   uint16_t hdop_x100;
 } sample_t;
 
-// Both return the line length (including '\n'), 0 if it did not fit.
 size_t sample_csv_header(char *out, size_t size);
 size_t sample_to_csv(const sample_t *sample, char *out, size_t size);
 

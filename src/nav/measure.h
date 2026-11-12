@@ -20,7 +20,7 @@ float measure_distance_m(measure_point_t a, measure_point_t b);
 
 typedef struct {
   measure_point_t origin;
-  float dir_east;  // unit vector a -> b
+  float dir_east;
   float dir_north;
   float bearing_deg;
 } measure_line_t;

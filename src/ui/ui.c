@@ -5,8 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Custom degree glyph in font8x8. Kept as a separate literal so the \x escape
-// cannot swallow following hex-valid characters.
 #define DEG "\x7f"
 
 static uint8_t shift_x = 0;

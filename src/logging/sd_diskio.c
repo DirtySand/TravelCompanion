@@ -1,6 +1,6 @@
 #include "sd_diskio.h"
 #include "board_config.h"
-#include "ff.h" // must precede diskio.h (defines BYTE, UINT, LBA_t)
+#include "ff.h"
 #include "diskio.h"
 #include <stddef.h>
 
@@ -88,6 +88,5 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
   if (cmd == CTRL_SYNC) {
     return (sdcard_wait_ready(sd_card) == SDCARD_OK) ? RES_OK : RES_ERROR;
   }
-  // GET_SECTOR_COUNT / GET_BLOCK_SIZE are only needed by f_mkfs (disabled).
   return RES_PARERR;
 }

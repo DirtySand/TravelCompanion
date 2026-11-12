@@ -46,7 +46,6 @@ static void shut_down(sd_log_state_t new_state) {
     f_close(&file);
     file_open = false;
   }
-  // f_mount() registers the work area even when mounting fails.
   f_mount(NULL, "", 0);
   log_crypto_end(&crypto);
   sdcard_invalidate(card);
@@ -88,7 +87,6 @@ static bool next_file_index(unsigned long *next) {
 }
 
 static void random_seed(uint8_t seed[LOG_CRYPTO_SEED_SIZE]) {
-  // pico_rand mixes the RP2350 TRNG (default entropy source on RP2350).
   for (size_t offset = 0; offset < LOG_CRYPTO_SEED_SIZE;
        offset += sizeof(rng_128_t)) {
     rng_128_t random;
