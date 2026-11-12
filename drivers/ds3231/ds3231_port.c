@@ -1,3 +1,4 @@
+#include "ds3231_port.h"
 #include "hardware/i2c.h"
 
 int ds3231_port_i2c_read(void *ctx, uint8_t dev_addr, uint8_t reg_addr,

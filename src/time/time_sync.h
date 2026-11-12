@@ -1,8 +1,8 @@
 #ifndef TIME_SYNC_H
 #define TIME_SYNC_H
 
-#include "drivers/ds3231/ds3231.h"
-#include "drivers/neo6m/neo6m.h"
+#include "ds3231.h"
+#include "neo6m.h"
 
 typedef enum {
   TIME_SYNC_OK,

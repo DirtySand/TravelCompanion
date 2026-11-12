@@ -1,9 +1,9 @@
 #ifndef UI_H
 #define UI_H
 
-#include "drivers/SSD1351U3/ssd1351.h"
-#include "drivers/ds3231/ds3231.h"
-#include "drivers/neo6m/neo6m.h"
+#include "ssd1351.h"
+#include "ds3231.h"
+#include "neo6m.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

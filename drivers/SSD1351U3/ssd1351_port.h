@@ -14,4 +14,4 @@ typedef struct {
 void ssd1351_port_hw_init(void);
 ssd1351_io_t ssd1351_port_get_io(void);
 
-#endif
+#endif // SSD1351_PORT_H

@@ -1,8 +1,8 @@
 #ifndef SD_DISKIO_H
 #define SD_DISKIO_H
 
-#include "drivers/ds3231/ds3231.h"
-#include "drivers/sdcard/sdcard.h"
+#include "ds3231.h"
+#include "sdcard.h"
 #include <stdbool.h>
 
 // FatFs disk I/O layer (drive 0 = SD card) and get_fattime().

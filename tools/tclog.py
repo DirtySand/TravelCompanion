@@ -2,12 +2,12 @@
 """TravelCompanion encrypted log tool.
 
   keygen   create the recipient key pair; writes the private key file and
-           the firmware header with the public key (log_pubkey.h)
+           the firmware header with the public key (config/log_pubkey.h)
   decrypt  decrypt one or more .TCL files from the SD card to CSV
            (waypoint lines "#WP,..." go to <output>_waypoints.csv when -o
            is given, otherwise they are printed with the rest)
 
-File format: see log_crypto.h in the firmware.
+File format: see src/logging/log_crypto.h in the firmware.
 Requires PyNaCl:  python3 -m pip install pynacl
 """
 
@@ -161,7 +161,7 @@ def main():
 
     k = sub.add_parser("keygen", help="create the key pair")
     k.add_argument("--private-key", default="tclog_private.key")
-    k.add_argument("--header", default="log_pubkey.h")
+    k.add_argument("--header", default="config/log_pubkey.h")
     k.add_argument("--force", action="store_true")
     k.set_defaults(func=keygen)
 

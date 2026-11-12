@@ -1,0 +1,8 @@
+add_subdirectory(bme680)
+add_subdirectory(SSD1351U3)
+add_subdirectory(ds3231)
+add_subdirectory(sht40)
+add_subdirectory(neo6m)
+add_subdirectory(qmc5883l)
+add_subdirectory(icm20649)
+add_subdirectory(sdcard)

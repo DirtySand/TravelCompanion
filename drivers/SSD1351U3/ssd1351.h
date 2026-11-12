@@ -29,4 +29,4 @@ void ssd1351_set_rotation(ssd1351_t *dev, ssd1351_rotation_t rotation);
 void ssd1351_set_contrast(ssd1351_t *dev, uint8_t level);
 void ssd1351_set_sleep(ssd1351_t *dev, bool sleep);
 
-#endif
+#endif // SSD1351_H

@@ -1,0 +1,8 @@
+add_subdirectory(system)
+add_subdirectory(time)
+add_subdirectory(ui)
+add_subdirectory(compass)
+add_subdirectory(motion)
+add_subdirectory(nav)
+add_subdirectory(logging)
+add_subdirectory(app)

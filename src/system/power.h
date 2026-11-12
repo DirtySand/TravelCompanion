@@ -1,5 +1,5 @@
-#ifndef power_h
-#define power_h
+#ifndef POWER_H
+#define POWER_H
 
 #include <stdint.h>
 
@@ -10,4 +10,4 @@
 // sees a falling edge. Returns the GPIO mask of the pins that woke the chip.
 uint32_t power_dormant_until(uint8_t rtc_int_pin, uint32_t button_pin_mask);
 
-#endif // power_h
+#endif // POWER_H

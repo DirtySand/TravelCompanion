@@ -1,7 +1,7 @@
 #ifndef SD_LOG_H
 #define SD_LOG_H
 
-#include "drivers/ds3231/ds3231.h"
+#include "ds3231.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

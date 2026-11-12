@@ -4,10 +4,10 @@
 #include "bme680_compensation.h"
 #include "bme680_internal.h"
 
-#define BME680_BLOCK_A_START  0x8A // par_t2 8A, 8B // par_t3 8C // par_p1 8E, 8F // par_p2 90, 91 // par_p3 92 // par_p4 94, 95 // par_p5 96, 97 // par_p7 98 // par_p6 99 // par_p8 9C, 9D // par_p9 9E, 9F // par_p10 A0
+#define BME680_BLOCK_A_START 0x8A
 #define BME680_BLOCK_A_END 0xA0
 #define BME680_BLOCK_A_LENGTH (BME680_BLOCK_A_END - BME680_BLOCK_A_START + 1)
-#define BME680_BLOCK_B_START 0xE1 // par_h2 E2<7:4>, E1 // par_h1 E2<3:0>, E3 // par_h3 E4 // par_h4 E5 // par_h5 E6 // par_h6 E7 // par_h7 E8 //par_t1 E9, EA
+#define BME680_BLOCK_B_START 0xE1
 #define BME680_BLOCK_B_END 0xEA
 #define BME680_BLOCK_B_LENGTH (BME680_BLOCK_B_END - BME680_BLOCK_B_START + 1)
 #define BME680_IIR_ADDR 0x75 // config_filter<4:2>

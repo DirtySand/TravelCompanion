@@ -1,7 +1,8 @@
 
 build/
 scripts/
-tools/
+tools/*
+!tools/tclog.py
 
 build-*/
 cmake-build-*/

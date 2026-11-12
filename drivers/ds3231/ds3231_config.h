@@ -1,5 +1,5 @@
-#ifndef ds3231_config_h
-#define ds3231_config_h
+#ifndef DS3231_CONFIG_H
+#define DS3231_CONFIG_H
 
 #define DS3231_STATUS_REG 0x0F
 
@@ -32,4 +32,4 @@
 #define DS3231_A2IE_BIT 1
 #define DS3231_INTCN_BIT 2
 
-#endif
+#endif // DS3231_CONFIG_H

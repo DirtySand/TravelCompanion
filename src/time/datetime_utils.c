@@ -1,5 +1,5 @@
 #include "datetime_utils.h"
-#include "drivers/ds3231/ds3231.h"
+#include "ds3231.h"
 #include "timezone.h"
 #include <stdbool.h>
 #include <stdio.h>
