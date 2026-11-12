@@ -1,3 +1,4 @@
+#include "bme680_port.h"
 #include "hardware/i2c.h"
 
 int bme680_port_i2c_read(void *ctx, uint8_t dev_addr, uint8_t reg_addr,

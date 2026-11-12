@@ -1,5 +1,5 @@
-#ifndef bme680_internal_h
-#define bme680_internal_h
+#ifndef BME680_INTERNAL_H
+#define BME680_INTERNAL_H
 #include "bme680.h"
 #include <stdint.h>
 
@@ -46,4 +46,4 @@ struct bme680 {
   bme680_i2c_read_fn i2c_read;
   bme680_i2c_write_fn i2c_write;
 };
-#endif
+#endif // BME680_INTERNAL_H

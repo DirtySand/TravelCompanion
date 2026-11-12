@@ -1,5 +1,5 @@
-#ifndef ds3231_h
-#define ds3231_h
+#ifndef DS3231_H
+#define DS3231_H
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -76,4 +76,4 @@ ds3231_status_t ds3231_enable_alarm1_interrupt(ds3231_t *dev, bool enable);
 ds3231_status_t ds3231_is_alarm1_triggered(ds3231_t *dev, bool *triggered);
 ds3231_status_t ds3231_clear_alarm1_flag(ds3231_t *dev);
 
-#endif
+#endif // DS3231_H

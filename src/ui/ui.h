@@ -1,0 +1,178 @@
+#ifndef UI_H
+#define UI_H
+
+#include "ssd1351.h"
+#include "ds3231.h"
+#include "neo6m.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define UI_SCREEN_SIZE 128
+#define UI_COLUMNS 15
+#define UI_CHAR_WIDTH 8
+#define UI_CHAR_HEIGHT 8
+#define UI_ROW_HEIGHT 10
+#define UI_TEXT_WIDTH (UI_COLUMNS * UI_CHAR_WIDTH)
+#define UI_CONTENT_ROWS 10
+#define UI_STATUS_ROW 10
+#define UI_FOOTER_ROW 11
+#define UI_LAYOUT_HEIGHT (UI_FOOTER_ROW * UI_ROW_HEIGHT + UI_CHAR_HEIGHT)
+#define UI_SHIFT_MAX_X (UI_SCREEN_SIZE - UI_TEXT_WIDTH)
+#define UI_SHIFT_MAX_Y (UI_SCREEN_SIZE - UI_LAYOUT_HEIGHT)
+
+#define UI_COLOR_BLACK 0x0000
+#define UI_COLOR_WHITE 0xFFFF
+#define UI_COLOR_RED 0xF800
+#define UI_COLOR_GREEN 0x07E0
+#define UI_COLOR_YELLOW 0xFFE0
+#define UI_COLOR_GRAY 0x8410
+
+typedef struct {
+  bool climate_valid;
+  float temperature;
+  float humidity;
+  bool pressure_valid;
+  float pressure;
+} ui_environment_t;
+
+typedef enum {
+  UI_GPS_OFF,
+  UI_GPS_STARTING,
+  UI_GPS_NO_DATA,
+  UI_GPS_IDLE,
+  UI_GPS_TIMEOUT,
+  UI_GPS_SEARCHING,
+  UI_GPS_LOST,
+  UI_GPS_FIX,
+} ui_gps_state_t;
+
+typedef struct {
+  ui_gps_state_t state;
+  bool has_fix;
+  bool fix_age_valid;
+  uint32_t fix_age_s;
+  neo6m_data_t live;
+  neo6m_data_t fix;
+  neo6m_stats_t stats;
+  uint32_t dropped_bytes;
+} ui_gps_t;
+
+typedef enum {
+  UI_COMPASS_REF_LEVEL,
+  UI_COMPASS_REF_TOP,
+  UI_COMPASS_REF_BACK
+} ui_compass_ref_t;
+
+typedef struct {
+  bool sensor_ok;
+  bool data_valid;
+  bool overflow;
+  bool calibrated;
+  ui_compass_ref_t reference;
+  bool heading_valid;
+  float heading_true_deg;
+  float heading_magnetic_deg;
+  float declination_deg;
+  float field_ut;
+  bool vertical_calibrated;
+  float inclination_deg;
+  float x_ut;
+  float y_ut;
+  float z_ut;
+  bool calibrating;
+  float range_x_ut;
+  float range_y_ut;
+  float range_z_ut;
+  uint32_t cal_samples;
+} ui_compass_t;
+
+typedef struct {
+  bool sensor_ok;
+  bool data_valid;
+  bool axes_ok;
+  float accel_g[3];
+  float accel_norm_g;
+  float gyro_dps[3];
+  float pitch_deg;
+  float roll_deg;
+  float chip_temp_c;
+} ui_imu_t;
+
+typedef enum {
+  UI_TRIP_STOPPED,
+  UI_TRIP_RUNNING,
+  UI_TRIP_PAUSED,
+} ui_trip_state_t;
+
+typedef struct {
+  bool sensor_ok;
+  ui_trip_state_t state;
+  uint32_t elapsed_s;
+  uint32_t steps;
+  float distance_m;
+  bool walking;
+  float speed_kmh;
+  float avg_speed_kmh;
+  float cadence_spm;
+  float last_step_m;
+  float weinberg_k;
+} ui_trip_t;
+
+typedef struct {
+  bool sensor_ok;
+  ui_trip_state_t state;
+  float east_m;
+  float north_m;
+  float range_m;
+  bool bearing_valid;
+  float bearing_deg;
+  bool heading_valid;
+  float heading_deg;
+  ui_compass_ref_t reference;
+  float path_m;
+  uint32_t steps_no_heading;
+  bool mag_calibrated;
+} ui_pdr_t;
+
+typedef struct {
+  const char *text;
+  uint16_t color;
+} ui_tag_t;
+
+void ui_set_shift(uint8_t dx, uint8_t dy);
+
+void ui_clear(ssd1351_t *oled);
+void ui_draw_line(ssd1351_t *oled, uint8_t row, const char *text,
+                  uint16_t color);
+void ui_draw_centered(ssd1351_t *oled, uint8_t row, const char *text,
+                      uint16_t color);
+void ui_draw_status(ssd1351_t *oled, const char *text, uint16_t color);
+void ui_draw_footer(ssd1351_t *oled, const char *title, uint8_t index,
+                    uint8_t count, const ui_tag_t *tags, uint8_t tag_count);
+void ui_draw_environment_card(ssd1351_t *oled, const ui_environment_t *env,
+                              const ds3231_datetime_t *utc,
+                              bool rtc_time_valid);
+void ui_draw_position_card(ssd1351_t *oled, const ui_gps_t *gps);
+void ui_draw_satellite_card(ssd1351_t *oled, const ui_gps_t *gps);
+void ui_draw_compass_card(ssd1351_t *oled, const ui_compass_t *compass);
+void ui_draw_imu_card(ssd1351_t *oled, const ui_imu_t *imu);
+void ui_draw_trip_card(ssd1351_t *oled, const ui_trip_t *trip);
+void ui_draw_pdr_card(ssd1351_t *oled, const ui_pdr_t *pdr);
+typedef struct {
+  char text[UI_COLUMNS + 1];
+  uint16_t color;
+} ui_row_t;
+
+void ui_draw_rows(ssd1351_t *oled, const ui_row_t *rows);
+
+void ui_format_distance(char *buffer, size_t size, float metres);
+unsigned ui_round_degrees(float degrees);
+const char *ui_cardinal(float degrees);
+
+void ui_draw_backpack_card(ssd1351_t *oled, bool rtc_time_valid,
+                           uint16_t interval_seconds);
+void ui_draw_backpack_view(ssd1351_t *oled, const ds3231_datetime_t *utc,
+                           bool sd_error);
+
+#endif // UI_H

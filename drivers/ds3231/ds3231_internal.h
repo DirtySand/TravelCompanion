@@ -1,5 +1,5 @@
-#ifndef ds3231_internal_h
-#define ds3231_internal_h
+#ifndef DS3231_INTERNAL_H
+#define DS3231_INTERNAL_H
 
 #include "ds3231.h"
 
@@ -13,4 +13,4 @@ struct ds3231 {
   bool alarm1_enabled, alarm2_enabled;
 };
 
-#endif
+#endif // DS3231_INTERNAL_H

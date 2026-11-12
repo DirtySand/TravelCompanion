@@ -30,4 +30,4 @@ bme680_status_t bme680_read_measurement_forced(bme680_t *dev,
                                                float *pressure,
                                                float *humidity);
 
-#endif
+#endif // BME680_H
