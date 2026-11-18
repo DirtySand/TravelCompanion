@@ -119,7 +119,8 @@ void toggle_auto_sync(app_t *app) {
 static void finish_time_sync(app_t *app) {
   neo6m_data_t data;
   neo6m_get_data(app->gps, &data);
-  switch (time_sync_rtc_from_gps(app->ds3231, &data)) {
+  switch (time_sync_rtc_from_gps(app->ds3231, &data,
+                                 GPS_MIN_VALID_YEAR - CENTURY_BASE)) {
   case TIME_SYNC_OK:
     app->sync_pending = false;
     app->time_invalid = false;
@@ -138,6 +139,11 @@ static void finish_time_sync(app_t *app) {
     break;
   case TIME_SYNC_NO_FIX:
     app->sync_pending = false;
+    break;
+  case TIME_SYNC_IMPLAUSIBLE_DATE:
+    app->sync_pending = false;
+    app->auto_sync_done = true;
+    show_error(app, "GPS date wrong");
     break;
   default:
     app->sync_pending = false;

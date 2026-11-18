@@ -8,11 +8,13 @@ typedef enum {
   TIME_SYNC_OK,
   TIME_SYNC_NO_FIX,
   TIME_SYNC_LEAP_SECOND,
+  TIME_SYNC_IMPLAUSIBLE_DATE,
   TIME_SYNC_RTC_ERROR,
   TIME_SYNC_NULL_PTR,
 } time_sync_status_t;
 
 time_sync_status_t time_sync_rtc_from_gps(ds3231_t *rtc,
-                                          const neo6m_data_t *gps);
+                                          const neo6m_data_t *gps,
+                                          uint8_t min_year);
 
 #endif // TIME_SYNC_H

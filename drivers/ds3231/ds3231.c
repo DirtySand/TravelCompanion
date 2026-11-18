@@ -104,11 +104,33 @@ ds3231_status_t ds3231_set_time(ds3231_t *dev, uint8_t hours, uint8_t minutes,
   convert_decimal_to_bcd(&buffer[2]);
   int result =
       dev->i2c_write(dev->ctx, dev->dev_addr, DS3231_SECONDS_REG, buffer, 3);
-  ds3231_write_bit(dev, DS3231_STATUS_REG, DS3231_OSF_BIT, 0);
   if (result < 0) {
     return DS3231_I2C_ERROR;
   }
-  return DS3231_OK;
+  return ds3231_write_bit(dev, DS3231_STATUS_REG, DS3231_OSF_BIT, 0);
+}
+
+ds3231_status_t ds3231_set_datetime(ds3231_t *dev,
+                                    const ds3231_datetime_t *datetime) {
+  if (dev == NULL || datetime == NULL) {
+    return DS3231_NULL_PTR;
+  }
+  uint8_t day_of_week = datetime->day_of_week;
+  if (day_of_week < 1 || day_of_week > 7) {
+    day_of_week = 1;
+  }
+  uint8_t buffer[7] = {datetime->seconds, datetime->minutes, datetime->hours,
+                       day_of_week,       datetime->day,     datetime->month,
+                       datetime->year};
+  for (int i = 0; i < 7; i++) {
+    convert_decimal_to_bcd(&buffer[i]);
+  }
+  int result =
+      dev->i2c_write(dev->ctx, dev->dev_addr, DS3231_SECONDS_REG, buffer, 7);
+  if (result < 0) {
+    return DS3231_I2C_ERROR;
+  }
+  return ds3231_write_bit(dev, DS3231_STATUS_REG, DS3231_OSF_BIT, 0);
 }
 
 ds3231_status_t ds3231_set_date(ds3231_t *dev, uint8_t day, uint8_t month,
@@ -300,6 +322,7 @@ ds3231_status_t ds3231_enable_alarm1_interrupt(ds3231_t *dev, bool enable) {
   }
 
   control_reg |= (1 << DS3231_INTCN_BIT);
+  control_reg &= ~(1 << DS3231_A2IE_BIT);
   if (enable) {
     control_reg |= (1 << DS3231_A1IE_BIT);
   } else {
@@ -322,4 +345,28 @@ ds3231_status_t ds3231_clear_alarm1_flag(ds3231_t *dev) {
     return DS3231_NULL_PTR;
   }
   return ds3231_write_bit(dev, DS3231_STATUS_REG, DS3231_A1F_BIT, 0);
+}
+
+ds3231_status_t ds3231_clear_alarm_flags(ds3231_t *dev) {
+  if (dev == NULL) {
+    return DS3231_NULL_PTR;
+  }
+  uint8_t status_reg;
+  int result =
+      dev->i2c_read(dev->ctx, dev->dev_addr, DS3231_STATUS_REG, &status_reg, 1);
+  if (result < 0) {
+    return DS3231_I2C_ERROR;
+  }
+  status_reg &= ~((1 << DS3231_A1F_BIT) | (1 << DS3231_A2F_BIT));
+  result = dev->i2c_write(dev->ctx, dev->dev_addr, DS3231_STATUS_REG,
+                          &status_reg, 1);
+  return (result < 0) ? DS3231_I2C_ERROR : DS3231_OK;
+}
+
+ds3231_status_t ds3231_set_32khz_output(ds3231_t *dev, bool enable) {
+  if (dev == NULL) {
+    return DS3231_NULL_PTR;
+  }
+  return ds3231_write_bit(dev, DS3231_STATUS_REG, DS3231_EN32KHZ_BIT,
+                          enable ? 1 : 0);
 }

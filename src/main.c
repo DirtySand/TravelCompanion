@@ -192,7 +192,8 @@ static ds3231_t *init_rtc(bool *time_invalid, bool *responding) {
     printf("DS3231 time invalid\n");
   }
   ds3231_enable_alarm1_interrupt(ds3231, true);
-  ds3231_clear_alarm1_flag(ds3231);
+  ds3231_clear_alarm_flags(ds3231);
+  ds3231_set_32khz_output(ds3231, false);
   return ds3231;
 }
 

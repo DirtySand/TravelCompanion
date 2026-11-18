@@ -72,8 +72,12 @@ ds3231_status_t ds3231_set_alarm_2(ds3231_t *dev, uint8_t hours,
                                    ds3231_alarm2_rate_t rate);
 ds3231_status_t ds3231_read_datetime(ds3231_t *dev,
                                      ds3231_datetime_t *datetime);
+ds3231_status_t ds3231_set_datetime(ds3231_t *dev,
+                                    const ds3231_datetime_t *datetime);
 ds3231_status_t ds3231_enable_alarm1_interrupt(ds3231_t *dev, bool enable);
 ds3231_status_t ds3231_is_alarm1_triggered(ds3231_t *dev, bool *triggered);
 ds3231_status_t ds3231_clear_alarm1_flag(ds3231_t *dev);
+ds3231_status_t ds3231_clear_alarm_flags(ds3231_t *dev);
+ds3231_status_t ds3231_set_32khz_output(ds3231_t *dev, bool enable);
 
 #endif // DS3231_H

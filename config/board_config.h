@@ -42,6 +42,7 @@
 #define MAG_CAL_SCALE_Z 1.0f
 #define I2C_BAUDRATE 100000
 #define CENTURY_BASE 2000
+#define GPS_MIN_VALID_YEAR 2026
 #define RTC_INT_PIN 5
 #define BUTTON_PIN_0 10
 #define BUTTON_PIN_1 8

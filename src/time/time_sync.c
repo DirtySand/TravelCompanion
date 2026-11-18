@@ -2,7 +2,8 @@
 #include <stddef.h>
 
 time_sync_status_t time_sync_rtc_from_gps(ds3231_t *rtc,
-                                          const neo6m_data_t *gps) {
+                                          const neo6m_data_t *gps,
+                                          uint8_t min_year) {
   if (rtc == NULL || gps == NULL) {
     return TIME_SYNC_NULL_PTR;
   }
@@ -12,11 +13,18 @@ time_sync_status_t time_sync_rtc_from_gps(ds3231_t *rtc,
   if (gps->seconds > 59) {
     return TIME_SYNC_LEAP_SECOND;
   }
-  if (ds3231_set_time(rtc, gps->hours, gps->minutes, gps->seconds) !=
-      DS3231_OK) {
-    return TIME_SYNC_RTC_ERROR;
+  if (gps->year < min_year) {
+    return TIME_SYNC_IMPLAUSIBLE_DATE;
   }
-  if (ds3231_set_date(rtc, gps->day, gps->month, gps->year) != DS3231_OK) {
+  const ds3231_datetime_t utc = {
+      .seconds = gps->seconds,
+      .minutes = gps->minutes,
+      .hours = gps->hours,
+      .day = gps->day,
+      .month = gps->month,
+      .year = gps->year,
+  };
+  if (ds3231_set_datetime(rtc, &utc) != DS3231_OK) {
     return TIME_SYNC_RTC_ERROR;
   }
   return TIME_SYNC_OK;
