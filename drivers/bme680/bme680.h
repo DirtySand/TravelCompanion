@@ -18,10 +18,12 @@ typedef int (*bme680_i2c_read_fn)(void *ctx, uint8_t dev_addr, uint8_t reg_addr,
 typedef int (*bme680_i2c_write_fn)(void *ctx, uint8_t dev_addr,
                                    uint8_t reg_addr, const uint8_t *data,
                                    uint8_t length);
+typedef void (*bme680_delay_ms_fn)(void *ctx, uint32_t ms);
 
 bme680_t *bme680_create(void *ctx, uint8_t dev_addr,
                         bme680_i2c_read_fn i2c_read,
-                        bme680_i2c_write_fn i2c_write);
+                        bme680_i2c_write_fn i2c_write,
+                        bme680_delay_ms_fn delay_ms);
 
 bme680_status_t bme680_read_chip_id(bme680_t *dev, uint8_t *chip_id);
 bme680_status_t bme680_init(bme680_t *dev);
