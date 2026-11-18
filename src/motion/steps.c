@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #define SECONDS_PER_MINUTE 60.0f
+#define US_PER_S 1000000.0f
 #define CADENCE_ALPHA 0.3f
 
 void steps_default_config(steps_config_t *config) {
@@ -29,6 +30,10 @@ void steps_init(steps_t *s, const steps_config_t *config) {
   s->phase = STEPS_SEEK_PEAK;
 }
 
+static float seconds_between(uint64_t later_us, uint64_t earlier_us) {
+  return (float)(later_us - earlier_us) / US_PER_S;
+}
+
 static float step_length(const steps_config_t *c, float amplitude) {
   if (amplitude < 0.0f) {
     amplitude = 0.0f;
@@ -50,17 +55,19 @@ static void end_series(steps_t *s) {
 static void note_peak(steps_t *s, steps_peak_result_t result) {
   steps_peak_t *p = &s->last_peak;
   p->count++;
-  p->time_s = s->peak_time_s;
+  p->time_s = (float)s->peak_time_us / US_PER_S;
   p->peak = s->peak;
   p->valley = s->valley;
-  p->rise_s = s->peak_time_s - s->valley_time_s;
+  p->rise_s = (s->peak_time_us >= s->valley_time_us)
+                  ? seconds_between(s->peak_time_us, s->valley_time_us)
+                  : 0.0f;
   p->pending = s->pending_steps;
   p->result = result;
 }
 
 static uint8_t register_step(steps_t *s, float *distance_m) {
   const steps_config_t *c = &s->config;
-  float interval = s->peak_time_s - s->last_step_time_s;
+  float interval = seconds_between(s->peak_time_us, s->last_step_time_us);
   s->last_peak.interval_s = s->have_step ? interval : 0.0f;
   bool continues = s->have_step && interval <= c->max_interval_s;
   if (!continues) {
@@ -74,7 +81,7 @@ static uint8_t register_step(steps_t *s, float *distance_m) {
   }
   float length = step_length(c, s->peak - s->valley);
   s->last_step_m = length;
-  s->last_step_time_s = s->peak_time_s;
+  s->last_step_time_us = s->peak_time_us;
   s->have_step = true;
 
   if (s->walking) {
@@ -100,21 +107,22 @@ static uint8_t register_step(steps_t *s, float *distance_m) {
 uint8_t steps_update(steps_t *s, float vertical_accel_ms2, float dt_s,
                      float *distance_m) {
   const steps_config_t *c = &s->config;
-  s->time_s += dt_s;
+  s->time_us += (uint64_t)llroundf(dt_s * US_PER_S);
   if (!s->filter_ready) {
     s->stage1 = vertical_accel_ms2;
     s->stage2 = vertical_accel_ms2;
     s->peak = vertical_accel_ms2;
-    s->peak_time_s = s->time_s;
+    s->peak_time_us = s->time_us;
     s->valley = vertical_accel_ms2;
-    s->valley_time_s = s->time_s;
+    s->valley_time_us = s->time_us;
     s->filter_ready = true;
   }
   s->stage1 += c->filter_alpha * (vertical_accel_ms2 - s->stage1);
   s->stage2 += c->filter_alpha * (s->stage1 - s->stage2);
   float y = s->stage2;
 
-  if (s->have_step && s->time_s - s->last_step_time_s > c->max_interval_s &&
+  if (s->have_step &&
+      seconds_between(s->time_us, s->last_step_time_us) > c->max_interval_s &&
       (s->walking || s->pending_steps > 0)) {
     end_series(s);
   }
@@ -123,40 +131,40 @@ uint8_t steps_update(steps_t *s, float vertical_accel_ms2, float dt_s,
   if (s->phase == STEPS_SEEK_PEAK) {
     if (y > s->peak) {
       s->peak = y;
-      s->peak_time_s = s->time_s;
+      s->peak_time_us = s->time_us;
     }
     if (y < s->valley) {
       s->valley = y;
-      s->valley_time_s = s->time_s;
+      s->valley_time_us = s->time_us;
     }
     if (s->peak >= c->peak_threshold && y <= s->peak - c->hysteresis) {
-      bool too_soon = s->have_step &&
-                      s->peak_time_s - s->last_step_time_s < c->min_interval_s;
+      float since_step = seconds_between(s->peak_time_us, s->last_step_time_us);
+      bool too_soon = s->have_step && since_step < c->min_interval_s;
       if (!too_soon) {
         committed = register_step(s, distance_m);
       } else {
-        s->last_peak.interval_s = s->peak_time_s - s->last_step_time_s;
+        s->last_peak.interval_s = since_step;
         note_peak(s, STEPS_PEAK_TOO_SOON);
       }
       s->phase = STEPS_SEEK_VALLEY;
       s->valley = y;
-      s->valley_time_s = s->time_s;
+      s->valley_time_us = s->time_us;
     }
   } else {
     if (y < s->valley) {
       s->valley = y;
-      s->valley_time_s = s->time_s;
+      s->valley_time_us = s->time_us;
     }
     if (y >= s->valley + c->hysteresis) {
       s->phase = STEPS_SEEK_PEAK;
       s->peak = y;
-      s->peak_time_s = s->time_s;
+      s->peak_time_us = s->time_us;
     }
   }
   return committed;
 }
 
 bool steps_walking(const steps_t *s) {
-  return s->walking &&
-         s->time_s - s->last_step_time_s <= s->config.max_interval_s;
+  return s->walking && seconds_between(s->time_us, s->last_step_time_us) <=
+                           s->config.max_interval_s;
 }
