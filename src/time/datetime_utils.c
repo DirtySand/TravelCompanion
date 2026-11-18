@@ -30,7 +30,7 @@ static uint8_t days_in_month(uint8_t month, uint16_t year) {
   }
 }
 
-void datetime_add_seconds(ds3231_datetime_t *datetime, int seconds,
+void datetime_add_seconds(ds3231_datetime_t *datetime, uint32_t seconds,
                           uint16_t century_base) {
   if (datetime == NULL) {
     return;
@@ -94,4 +94,31 @@ uint32_t datetime_to_seconds(const ds3231_datetime_t *datetime,
   days += datetime->day - 1u;
   return ((days * 24u + datetime->hours) * 60u + datetime->minutes) * 60u +
          datetime->seconds;
+}
+
+void datetime_from_seconds(uint32_t seconds, uint16_t century_base,
+                           ds3231_datetime_t *datetime) {
+  if (datetime == NULL) {
+    return;
+  }
+  uint32_t days = seconds / 86400u;
+  uint32_t of_day = seconds % 86400u;
+  uint16_t year = century_base;
+  while (days >= (is_leap_year(year) ? 366u : 365u)) {
+    days -= is_leap_year(year) ? 366u : 365u;
+    year++;
+  }
+  uint8_t month = 1;
+  while (days >= days_in_month(month, year)) {
+    days -= days_in_month(month, year);
+    month++;
+  }
+  *datetime = (ds3231_datetime_t){
+      .seconds = (uint8_t)(of_day % 60u),
+      .minutes = (uint8_t)((of_day / 60u) % 60u),
+      .hours = (uint8_t)(of_day / 3600u),
+      .day = (uint8_t)(days + 1u),
+      .month = month,
+      .year = (uint8_t)(year - century_base),
+  };
 }

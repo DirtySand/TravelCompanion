@@ -84,8 +84,7 @@ static bme680_status_t bme680_set_calib(bme680_t *dev) {
   dev->calib.press_calib.par_p5 =
       (int16_t)(buffer_a[0x97 - BME680_BLOCK_A_START] << 8 |
                 buffer_a[0x96 - BME680_BLOCK_A_START]);
-  dev->calib.press_calib.par_p6 =
-      (int8_t)buffer_a[0x99 - BME680_BLOCK_A_START];
+  dev->calib.press_calib.par_p6 = (int8_t)buffer_a[0x99 - BME680_BLOCK_A_START];
   dev->calib.press_calib.par_p7 = (int8_t)buffer_a[0x98 - BME680_BLOCK_A_START];
   dev->calib.press_calib.par_p8 =
       (int16_t)(buffer_a[0x9D - BME680_BLOCK_A_START] << 8 |
@@ -164,9 +163,8 @@ bme680_status_t bme680_init(bme680_t *dev) {
   return bme680_set_parameters(dev, 0, 1, BME680_CTRL_MEAS_FORCED);
 }
 
-static bme680_status_t bme680_get_measurement_status(bme680_t *dev,
-                                                     bool *measuring,
-                                                     bool *new_data) {
+static bme680_status_t
+bme680_get_measurement_status(bme680_t *dev, bool *measuring, bool *new_data) {
   if (dev == NULL || measuring == NULL || new_data == NULL) {
     return BME680_NULL_PTR;
   }

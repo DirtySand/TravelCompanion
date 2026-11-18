@@ -2,6 +2,7 @@
 #include "board_config.h"
 #include "hardware/i2c.h"
 #include "icm20649_port.h"
+#include "log.h"
 #include <math.h>
 #include <stdio.h>
 
@@ -11,7 +12,6 @@
 #define IMU_GYRO_RATE_DIV 21
 #define IMU_DLPF_CFG 4
 #define IMU_FIFO_PROBE false
-#define STEP_DEBUG_LOG true
 #define IMU_FIFO_PROBE_MS 1000
 #define IMU_FIFO_FRAME_BYTES 12
 #define IMU_FIFO_MAX_FRAMES (4096 / IMU_FIFO_FRAME_BYTES)
@@ -33,7 +33,7 @@ static void imu_fifo_start(app_t *app) {
                           true);
   app->imu_fifo_running = (status == ICM20649_OK);
   if (!app->imu_fifo_running) {
-    printf("ICM-20649 FIFO start failed: %d\n", status);
+    LOG("ICM-20649 FIFO start failed: %d\n", status);
   }
 }
 
@@ -54,27 +54,27 @@ static void imu_probe_fifo(app_t *app) {
   icm20649_fifo_stop(app->imu);
   icm20649_set_rate_dividers(app->imu, IMU_ACCEL_RATE_DIV, IMU_GYRO_RATE_DIV);
   if (status != ICM20649_OK) {
-    printf("ICM-20649 FIFO probe failed: %d\n", status);
+    LOG("ICM-20649 FIFO probe failed: %d\n", status);
     return;
   }
-  printf("ICM-20649 FIFO probe: %u bytes after %u ms at ~1.1 kHz, "
-         "overflow flag %d\n",
-         (unsigned)count, (unsigned)IMU_FIFO_PROBE_MS, (int)overflow);
+  LOG("ICM-20649 FIFO probe: %u bytes after %u ms at ~1.1 kHz, "
+      "overflow flag %d\n",
+      (unsigned)count, (unsigned)IMU_FIFO_PROBE_MS, (int)overflow);
 }
 
 bool imu_init(app_t *app) {
   if (!compass_axes_valid(&imu_axes)) {
-    printf("IMU_AXIS_* in board_config.h must use X, Y and Z once each\n");
+    LOG("IMU_AXIS_* in board_config.h must use X, Y and Z once each\n");
     return false;
   }
   if (!compass_axes_right_handed(&imu_axes)) {
-    printf("IMU_AXIS_* in board_config.h are mirrored: one sign is wrong\n");
+    LOG("IMU_AXIS_* in board_config.h are mirrored: one sign is wrong\n");
   }
   app->imu =
       icm20649_create(I2C_PORT, ICM20649_I2C_ADDRESS, icm20649_port_i2c_read,
                       icm20649_port_i2c_write, icm20649_port_delay_ms);
   if (app->imu == NULL) {
-    printf("Failed to create ICM-20649 instance\n");
+    LOG("Failed to create ICM-20649 instance\n");
     return false;
   }
   const icm20649_config_t config = {
@@ -89,15 +89,15 @@ bool imu_init(app_t *app) {
   if (status == ICM20649_WRONG_CHIP_ID) {
     uint8_t chip_id = 0;
     icm20649_read_chip_id(app->imu, &chip_id);
-    printf("ICM-20649 wrong chip ID: 0x%02X (expected 0x%02X)\n", chip_id,
-           ICM20649_CHIP_ID);
+    LOG("ICM-20649 wrong chip ID: 0x%02X (expected 0x%02X)\n", chip_id,
+        ICM20649_CHIP_ID);
     return false;
   }
   if (status != ICM20649_OK) {
-    printf("ICM-20649 init failed: %d\n", status);
+    LOG("ICM-20649 init failed: %d\n", status);
     return false;
   }
-  printf("ICM-20649 ready\n");
+  LOG("ICM-20649 ready\n");
   if (IMU_FIFO_PROBE) {
     imu_probe_fifo(app);
   }
@@ -114,7 +114,7 @@ void imu_set_running(app_t *app, bool running) {
     app->imu_fifo_running = false;
   }
   if (icm20649_set_sleep(app->imu, !running) != ICM20649_OK) {
-    printf("ICM-20649 sleep change failed\n");
+    LOG("ICM-20649 sleep change failed\n");
     app->imu_error = true;
   }
   app->imu_filter_valid = false;
@@ -135,9 +135,9 @@ static void imu_check_frames(app_t *app, float accel_norm_sum,
   }
   app->imu_fifo_checked = true;
   float mean = accel_norm_sum / (float)frames;
-  printf("ICM-20649 FIFO: %lu frames, mean |a| %.2f g%s\n",
-         (unsigned long)frames, (double)mean,
-         (mean > 0.5f && mean < 1.5f) ? "" : " - unexpected frame layout!");
+  LOG("ICM-20649 FIFO: %lu frames, mean |a| %.2f g%s\n", (unsigned long)frames,
+      (double)mean,
+      (mean > 0.5f && mean < 1.5f) ? "" : " - unexpected frame layout!");
 }
 
 bool walking_heading(app_t *app, float *heading_deg,
@@ -177,11 +177,11 @@ static void log_step_peak(app_t *app, float dynamic_ms2, bool new_peak,
       [STEPS_PEAK_WALKING] = "walking",
   };
   const steps_peak_t *p = &app->steps.last_peak;
-  printf("step t=%.2f pk=%.2f vl=%.2f rise=%.2f int=%.2f raw=%.1f "
-         "pend=%u +%u %s\n",
-         (double)p->time_s, (double)p->peak, (double)p->valley,
-         (double)p->rise_s, (double)p->interval_s, (double)raw_max,
-         (unsigned)p->pending, (unsigned)counted, results[p->result]);
+  LOG("step t=%.2f pk=%.2f vl=%.2f rise=%.2f int=%.2f raw=%.1f "
+      "pend=%u +%u %s\n",
+      (double)p->time_s, (double)p->peak, (double)p->valley, (double)p->rise_s,
+      (double)p->interval_s, (double)raw_max, (unsigned)p->pending,
+      (unsigned)counted, results[p->result]);
   raw_max = 0.0f;
 }
 
@@ -235,7 +235,7 @@ void imu_drain_fifo(app_t *app) {
   }
   if (status != ICM20649_OK) {
     if (!app->imu_error) {
-      printf("ICM-20649 FIFO read failed: %d\n", status);
+      LOG("ICM-20649 FIFO read failed: %d\n", status);
     }
     app->imu_error = true;
     return;
@@ -267,7 +267,7 @@ void imu_drain_fifo(app_t *app) {
   imu_check_frames(app, accel_norm_sum, frames);
 
   if (overflow) {
-    printf("ICM-20649 FIFO overflow - restarting it\n");
+    LOG("ICM-20649 FIFO overflow - restarting it\n");
     imu_fifo_start(app);
   }
 }
@@ -284,7 +284,7 @@ static void imu_update(app_t *app) {
   icm20649_status_t status = icm20649_read_raw(app->imu, &raw);
   if (status != ICM20649_OK) {
     if (!app->imu_error) {
-      printf("ICM-20649 read failed: %d\n", status);
+      LOG("ICM-20649 read failed: %d\n", status);
     }
     app->imu_error = true;
     return;

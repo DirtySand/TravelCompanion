@@ -147,8 +147,7 @@ void sun_position(int64_t t_s, double lat_deg, double lon_deg,
   if (true_solar < 0.0) {
     true_solar += 1440.0;
   }
-  double ha = (true_solar / 4.0 < 0.0) ? true_solar / 4.0 + 180.0
-                                       : true_solar / 4.0 - 180.0;
+  double ha = true_solar / 4.0 - 180.0;
   double lat = RAD(lat_deg);
   double cos_zenith = sin(lat) * sin(s.declination_rad) +
                       cos(lat) * cos(s.declination_rad) * cos(RAD(ha));

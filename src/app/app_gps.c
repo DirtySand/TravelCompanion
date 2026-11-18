@@ -1,6 +1,7 @@
 #include "app.h"
 #include "board_config.h"
 #include "datetime_utils.h"
+#include "log.h"
 #include "neo6m_port.h"
 #include "time_sync.h"
 #include <stdio.h>
@@ -111,7 +112,7 @@ void toggle_auto_sync(app_t *app) {
   } else if (!app->time_invalid) {
     app->sync_pending = false;
   }
-  printf("Auto sync %s\n", app->auto_sync ? "on" : "off");
+  LOG("Auto sync %s\n", app->auto_sync ? "on" : "off");
   set_status(app, app->auto_sync ? "Auto sync ON" : "Auto sync OFF",
              UI_COLOR_GRAY);
 }
@@ -127,9 +128,9 @@ static void finish_time_sync(app_t *app) {
     if (gps_leap_seconds_trusted(&data)) {
       app->auto_sync_done = true;
     }
-    printf("RTC synced from GPS: %02u:%02u:%02u %02u-%02u-%04u UTC\n",
-           data.hours, data.minutes, data.seconds, data.day, data.month,
-           CENTURY_BASE + data.year);
+    LOG("RTC synced from GPS: %02u:%02u:%02u %02u-%02u-%04u UTC\n", data.hours,
+        data.minutes, data.seconds, data.day, data.month,
+        CENTURY_BASE + data.year);
     set_status(app, "Time synced", UI_COLOR_GREEN);
     if (!schedule_from_now(app)) {
       show_error(app, "RTC alarm error");
@@ -215,7 +216,7 @@ void gps_set_enabled(app_t *app, bool enabled) {
   if (enabled) {
     arm_auto_sync(app);
   }
-  printf("GPS %s\n", enabled ? "on" : "off");
+  LOG("GPS %s\n", enabled ? "on" : "off");
   set_status(app, enabled ? "GPS on" : "GPS off", UI_COLOR_GRAY);
 }
 

@@ -1,14 +1,15 @@
 #include "sd_log.h"
 #include "board_config.h"
-#include "sdcard.h"
-#include "sdcard_port.h"
 #include "ff.h"
+#include "log.h"
 #include "log_crypto.h"
 #include "log_pubkey.h"
 #include "monocypher.h"
 #include "pico/rand.h"
 #include "sample.h"
 #include "sd_diskio.h"
+#include "sdcard.h"
+#include "sdcard_port.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -131,7 +132,7 @@ static void open_log(uint32_t now_s) {
 
   FRESULT result = f_mount(&fs, "", 1);
   if (result != FR_OK) {
-    printf("SD mount failed: %d\n", result);
+    LOG("SD mount failed: %d\n", result);
     shut_down((result == FR_NOT_READY) ? SD_LOG_NO_CARD : SD_LOG_ERROR);
     return;
   }
@@ -162,7 +163,7 @@ static void open_log(uint32_t now_s) {
     shut_down(SD_LOG_ERROR);
     return;
   }
-  printf("SD log: %s\n", name);
+  LOG("SD log: %s\n", name);
   state = SD_LOG_READY;
 }
 
@@ -189,7 +190,7 @@ void sd_log_append(const char *line, size_t length,
   }
   if ((uint32_t)(now_s - last_flush_s) >= LOG_FLUSH_INTERVAL_SECONDS &&
       !flush_buffer(now_s)) {
-    printf("SD write failed\n");
+    LOG("SD write failed\n");
     shut_down(SD_LOG_ERROR);
   }
 }

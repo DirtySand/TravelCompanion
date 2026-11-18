@@ -4,7 +4,7 @@
 
 #include "ds3231.h"
 
-void datetime_add_seconds(ds3231_datetime_t *datetime, int seconds,
+void datetime_add_seconds(ds3231_datetime_t *datetime, uint32_t seconds,
                           uint16_t century_base);
 
 void datetime_to_local(const ds3231_datetime_t *datetime,
@@ -13,5 +13,8 @@ void datetime_to_local(const ds3231_datetime_t *datetime,
 
 uint32_t datetime_to_seconds(const ds3231_datetime_t *datetime,
                              uint16_t century_base);
+
+void datetime_from_seconds(uint32_t seconds, uint16_t century_base,
+                           ds3231_datetime_t *datetime);
 
 #endif // DATETIME_UTILS_H

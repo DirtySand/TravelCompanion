@@ -91,7 +91,7 @@ static uint32_t wait_while_view_active(app_t *app) {
   return buttons_take_events();
 }
 
-static uint32_t sleep_until_event(app_t *app) {
+static uint32_t sleep_until_event(void) {
   uint8_t ok_pin = buttons_pin(BUTTON_OK);
   uint8_t back_pin = buttons_pin(BUTTON_BACK);
   uint32_t wake = power_dormant_until(
@@ -112,7 +112,7 @@ static uint32_t sleep_until_event(app_t *app) {
 void run_backpack_cycle(app_t *app) {
   power_watchdog_kick();
   uint32_t events =
-      app->view_active ? wait_while_view_active(app) : sleep_until_event(app);
+      app->view_active ? wait_while_view_active(app) : sleep_until_event();
 
   if (rtc_alarm_pending() && !handle_sample_alarm(app)) {
     abort_backpack_mode(app, "RTC error");

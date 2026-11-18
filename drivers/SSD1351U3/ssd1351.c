@@ -98,7 +98,7 @@ void ssd1351_draw_pixel(ssd1351_t *dev, uint8_t x, uint8_t y, uint16_t color) {
 
 void ssd1351_fill_rect(ssd1351_t *dev, uint8_t x, uint8_t y,
                        uint8_t w, uint8_t h, uint16_t color) {
-    if (x >= 128 || y >= 128) return;
+    if (x >= 128 || y >= 128 || w == 0 || h == 0) return;
     if (x + w > 128) w = 128 - x;
     if (y + h > 128) h = 128 - y;
 

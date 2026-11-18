@@ -1,3 +1,5 @@
+add_compile_options(-Wall -Wextra)
+
 add_subdirectory(system)
 add_subdirectory(time)
 add_subdirectory(ui)

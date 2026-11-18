@@ -2,6 +2,7 @@
 #include "board_config.h"
 #include "datetime_utils.h"
 #include "geo.h"
+#include "log.h"
 #include "sd_log.h"
 #include "wp_flash.h"
 #include <math.h>
@@ -12,16 +13,16 @@ static waypoint_t waypoint_items[WP_FLASH_SLOTS];
 void waypoints_start(app_t *app) {
   wp_storage_t storage;
   if (!wp_flash_storage(&storage)) {
-    printf("Waypoints: firmware overlaps the flash region\n");
+    LOG("Waypoints: firmware overlaps the flash region\n");
     app->wps_ok = false;
     return;
   }
   waypoints_load(&app->wps, &storage, waypoint_items);
   app->wps_ok = true;
   app->wp_index = (app->wps.count > 0) ? (uint16_t)(app->wps.count - 1u) : 0;
-  printf("Waypoints: %u loaded, %u damaged, %u free\n", app->wps.count,
-         app->wps.damaged,
-         (unsigned)(app->wps.storage.slot_count - app->wps.next_slot));
+  LOG("Waypoints: %u loaded, %u damaged, %u free\n", app->wps.count,
+      app->wps.damaged,
+      (unsigned)(app->wps.storage.slot_count - app->wps.next_slot));
 }
 
 const waypoint_t *waypoint_by_id(const app_t *app, uint16_t id) {
@@ -82,14 +83,9 @@ static void waypoint_log(const waypoint_t *wp, const ds3231_datetime_t *utc,
   if (length <= 0 || (size_t)length >= sizeof(line)) {
     return;
   }
-  printf("%s", line);
-  if (time_valid) {
-    sd_log_append(line, (size_t)length, utc, true,
-                  datetime_to_seconds(utc, CENTURY_BASE));
-  } else {
-    ds3231_datetime_t epoch = {.day = 1, .month = 1, .year = 0};
-    sd_log_append(line, (size_t)length, &epoch, false, 0);
-  }
+  LOG("%s", line);
+  sd_log_append(line, (size_t)length, utc, time_valid,
+                datetime_to_seconds(utc, CENTURY_BASE));
 }
 
 static void waypoint_mark(app_t *app) {
@@ -114,11 +110,11 @@ static void waypoint_mark(app_t *app) {
     wp.altitude_m = alt_altitude_m(&app->alt);
     wp.flags |= WAYPOINT_HAS_ALTITUDE;
   }
-  ds3231_datetime_t utc = {0};
-  uint32_t now_s = 0;
-  bool time_valid = rtc_now(app, &utc, &now_s);
+  ds3231_datetime_t utc = {.day = 1, .month = 1};
+  bool rtc_read = ds3231_read_datetime(app->ds3231, &utc) == DS3231_OK;
+  bool time_valid = rtc_read && !app->time_invalid;
   if (time_valid) {
-    wp.utc_s = now_s;
+    wp.utc_s = datetime_to_seconds(&utc, CENTURY_BASE);
     wp.flags |= WAYPOINT_HAS_TIME;
   }
   if (!waypoints_add(&app->wps, &wp)) {
@@ -138,7 +134,7 @@ static void waypoints_erase(app_t *app) {
   }
   bool ok = waypoints_clear(&app->wps);
   app->wp_index = 0;
-  printf("Waypoints cleared%s\n", ok ? "" : " (erase error)");
+  LOG("Waypoints cleared%s\n", ok ? "" : " (erase error)");
   set_status(app, ok ? "WP cleared" : "WP erase error",
              ok ? UI_COLOR_YELLOW : UI_COLOR_RED);
 }

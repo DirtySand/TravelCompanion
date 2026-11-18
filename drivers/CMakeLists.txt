@@ -1,3 +1,5 @@
+add_compile_options(-Wall -Wextra)
+
 add_subdirectory(i2c_bus)
 add_subdirectory(bme680)
 add_subdirectory(SSD1351U3)

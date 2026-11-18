@@ -1,6 +1,7 @@
 #include "app.h"
 #include "board_config.h"
 #include "datetime_utils.h"
+#include "log.h"
 #include "sample.h"
 #include "sd_log.h"
 #include <stdio.h>
@@ -52,7 +53,7 @@ bool schedule_from_now(app_t *app) {
   uint32_t offset =
       SAMPLE_INTERVAL_SECONDS - (to_seconds(&now) % SAMPLE_INTERVAL_SECONDS);
   app->next_sample = now;
-  datetime_add_seconds(&app->next_sample, (int)offset, CENTURY_BASE);
+  datetime_add_seconds(&app->next_sample, offset, CENTURY_BASE);
   if (!arm_sample_alarm(app, false)) {
     app->schedule_valid = false;
     return false;
@@ -70,7 +71,7 @@ static bool read_climate(sht40_t *sht40, float *temperature, float *humidity) {
       sht40_measure(sht40, SHT40_PRECISION_HIGH, temperature, humidity);
   if (status != SHT40_OK) {
     if (!failing) {
-      printf("SHT40 measurement failed: %d\n", status);
+      LOG("SHT40 measurement failed: %d\n", status);
     }
     failing = true;
     return false;
@@ -89,7 +90,7 @@ static bool read_pressure(bme680_t *bme680, float *pressure) {
       bme680_read_measurement_forced(bme680, &temperature, pressure, &humidity);
   if (status != BME680_OK) {
     if (!failing) {
-      printf("BME680 measurement failed: %d\n", status);
+      LOG("BME680 measurement failed: %d\n", status);
     }
     failing = true;
     return false;
@@ -170,7 +171,9 @@ static void take_sample(app_t *app, const ds3231_datetime_t *scheduled) {
   if (length == 0) {
     return;
   }
-  printf("%s", line);
+  if (app->mode == MODE_MANUAL) {
+    LOG("%s", line);
+  }
   sd_log_append(line, length, &s.utc, s.time_valid, to_seconds(&s.utc));
 }
 

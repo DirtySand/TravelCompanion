@@ -2,6 +2,7 @@
 #include "board_config.h"
 #include "datetime_utils.h"
 #include "i2c_bus.h"
+#include "log.h"
 #include "timezone.h"
 #include <stdio.h>
 
@@ -19,7 +20,7 @@ void set_status(app_t *app, const char *text, uint16_t color) {
 }
 
 void show_error(app_t *app, const char *message) {
-  printf("%s\n", message);
+  LOG("%s\n", message);
   set_status(app, message, UI_COLOR_RED);
 }
 
@@ -28,7 +29,7 @@ void report_i2c_timeouts(app_t *app) {
   uint32_t count = i2c_bus_timeout_count();
   if (count != reported) {
     reported = count;
-    printf("I2C timeouts: %lu\n", (unsigned long)count);
+    LOG("I2C timeouts: %lu\n", (unsigned long)count);
     set_status(app, "I2C timeout", UI_COLOR_RED);
   }
 }
@@ -55,12 +56,7 @@ bool rtc_now(app_t *app, ds3231_datetime_t *utc, uint32_t *seconds) {
 }
 
 void seconds_to_datetime(uint32_t seconds, ds3231_datetime_t *out) {
-  *out = (ds3231_datetime_t){.day = 1, .month = 1, .year = 0};
-  while (seconds > 86400u * 365u) {
-    datetime_add_seconds(out, (int)(86400u * 365u), CENTURY_BASE);
-    seconds -= 86400u * 365u;
-  }
-  datetime_add_seconds(out, (int)seconds, CENTURY_BASE);
+  datetime_from_seconds(seconds, CENTURY_BASE, out);
 }
 
 int32_t local_offset_s(uint32_t utc_s) {

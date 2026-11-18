@@ -248,7 +248,7 @@ static void area_add(app_t *app) {
     return;
   }
   app->area[app->area_count++] = nav_here(app);
-  char text[UI_COLUMNS + 1];
+  char text[24];
   snprintf(text, sizeof(text), "Point %u added", app->area_count);
   set_status(app, text, UI_COLOR_GREEN);
 }

@@ -17,7 +17,7 @@ int ds3231_port_i2c_write(void *ctx, uint8_t dev_addr, uint8_t reg_addr,
   i2c_inst_t *i2c = (i2c_inst_t *)ctx;
 
   uint8_t buffer[16];
-  if (length + 1 > sizeof(buffer)) {
+  if ((size_t)length + 1 > sizeof(buffer)) {
     return -1;
   }
   buffer[0] = reg_addr;

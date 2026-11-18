@@ -1,5 +1,6 @@
 #include "app.h"
 #include "board_config.h"
+#include "log.h"
 #include "sd_log.h"
 #include "sun.h"
 #include <stdio.h>
@@ -210,7 +211,7 @@ static void draw_environment_card(app_t *app, bool scheduled) {
   ds3231_datetime_t datetime;
   ds3231_status_t ds3231_status = ds3231_read_datetime(app->ds3231, &datetime);
   if (ds3231_status != DS3231_OK) {
-    printf("Failed to read datetime: %d\n", ds3231_status);
+    LOG("Failed to read datetime: %d\n", ds3231_status);
     app->shown_second_valid = false;
   } else if (scheduled) {
     track_shown_second(app, datetime.seconds);

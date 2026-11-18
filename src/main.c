@@ -4,6 +4,7 @@
 #include "ds3231_port.h"
 #include "hardware/clocks.h"
 #include "i2c_bus.h"
+#include "log.h"
 #include "neo6m_port.h"
 #include "pico/rand.h"
 #include "pico/stdio_usb.h"
@@ -54,14 +55,14 @@ static void wait_for_usb_log(ssd1351_t *oled) {
   }
   if (stdio_usb_connected()) {
     sleep_ms(USB_LOG_POST_CONNECT_MS);
-    printf("USB log connected\n");
+    LOG("USB log connected\n");
   }
   buttons_take_events();
   ui_clear(oled);
 }
 
 static void halt_with_message(ssd1351_t *oled, const char *message) {
-  printf("Fatal: %s\n", message);
+  LOG("Fatal: %s\n", message);
   ui_clear(oled);
   ui_draw_centered(oled, 4, "Fatal error", UI_COLOR_RED);
   ui_draw_centered(oled, 6, message, UI_COLOR_WHITE);
@@ -123,15 +124,15 @@ static bme680_t *init_bme680(void) {
       bme680_create(I2C_PORT, BME680_I2C_ADDRESS, bme680_port_i2c_read,
                     bme680_port_i2c_write, bme680_port_delay_ms);
   if (bme680 == NULL) {
-    printf("BME680 not responding\n");
+    LOG("BME680 not responding\n");
     return NULL;
   }
   uint8_t chip_id = 0;
   bme680_status_t status = bme680_read_chip_id(bme680, &chip_id);
   if (status != BME680_OK) {
-    printf("Failed to read chip ID: %d\n", status);
+    LOG("Failed to read chip ID: %d\n", status);
   } else {
-    printf("Chip ID: 0x%02X\n", chip_id);
+    LOG("Chip ID: 0x%02X\n", chip_id);
   }
   return bme680;
 }
@@ -145,14 +146,14 @@ static sht40_t *init_sht40(bool *responding) {
   }
   sht40_status_t status = sht40_soft_reset(sht40);
   if (status != SHT40_OK) {
-    printf("SHT40 soft reset failed: %d\n", status);
+    LOG("SHT40 soft reset failed: %d\n", status);
   }
   uint32_t serial = 0;
   status = sht40_read_serial(sht40, &serial);
   if (status != SHT40_OK) {
-    printf("Failed to read SHT40 serial: %d\n", status);
+    LOG("Failed to read SHT40 serial: %d\n", status);
   } else {
-    printf("SHT40 serial: 0x%08lX\n", (unsigned long)serial);
+    LOG("SHT40 serial: 0x%08lX\n", (unsigned long)serial);
   }
   *responding = (status == SHT40_OK);
   return sht40;
@@ -163,11 +164,11 @@ static neo6m_t *init_gps(void) {
   neo6m_t *gps =
       neo6m_create(NULL, neo6m_port_uart_read, neo6m_port_uart_write);
   if (gps == NULL) {
-    printf("Failed to create NEO-6M instance\n");
+    LOG("Failed to create NEO-6M instance\n");
     return NULL;
   }
   if (neo6m_power_on(gps) != NEO6M_OK) {
-    printf("Failed to wake NEO-6M\n");
+    LOG("Failed to wake NEO-6M\n");
   }
   return gps;
 }
@@ -182,14 +183,14 @@ static ds3231_t *init_rtc(bool *time_invalid, bool *responding) {
   *responding =
       ds3231_set_time_format(ds3231, DS3231_24_HOUR_FORMAT) == DS3231_OK;
   if (!*responding) {
-    printf("DS3231 not responding\n");
+    LOG("DS3231 not responding\n");
     return ds3231;
   }
   bool stopped = true;
   ds3231_status_t status = ds3231_check_oscillator_stopped(ds3231, &stopped);
   *time_invalid = (status != DS3231_OK) || stopped;
   if (*time_invalid) {
-    printf("DS3231 time invalid\n");
+    LOG("DS3231 time invalid\n");
   }
   ds3231_enable_alarm1_interrupt(ds3231, true);
   ds3231_clear_alarm_flags(ds3231);

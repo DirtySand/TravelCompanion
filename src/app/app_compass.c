@@ -1,6 +1,7 @@
 #include "app.h"
 #include "board_config.h"
 #include "hardware/i2c.h"
+#include "log.h"
 #include "qmc5883l_port.h"
 #include <stdio.h>
 
@@ -17,26 +18,26 @@ static const compass_axes_t mag_axes = {
 
 bool mag_init(app_t *app) {
   if (!compass_axes_valid(&mag_axes)) {
-    printf("MAG_AXIS_* in board_config.h must use X, Y and Z once each\n");
+    LOG("MAG_AXIS_* in board_config.h must use X, Y and Z once each\n");
     return false;
   }
   if (!compass_axes_right_handed(&mag_axes)) {
-    printf("MAG_AXIS_* in board_config.h are mirrored: one sign is wrong\n");
+    LOG("MAG_AXIS_* in board_config.h are mirrored: one sign is wrong\n");
   }
   app->mag =
       qmc5883l_create(I2C_PORT, QMC5883L_I2C_ADDRESS, qmc5883l_port_i2c_read,
                       qmc5883l_port_i2c_write, qmc5883l_port_delay_ms);
   if (app->mag == NULL) {
-    printf("Failed to create QMC5883L instance\n");
+    LOG("Failed to create QMC5883L instance\n");
     return false;
   }
   uint8_t chip_id = 0;
   if (qmc5883l_read_chip_id(app->mag, &chip_id) != QMC5883L_OK) {
-    printf("QMC5883L not responding\n");
+    LOG("QMC5883L not responding\n");
     return false;
   }
-  printf("QMC5883L chip ID: 0x%02X%s\n", chip_id,
-         (chip_id == QMC5883L_CHIP_ID) ? "" : " (expected 0xFF)");
+  LOG("QMC5883L chip ID: 0x%02X%s\n", chip_id,
+      (chip_id == QMC5883L_CHIP_ID) ? "" : " (expected 0xFF)");
   const qmc5883l_config_t config = {
       .odr = QMC5883L_ODR_50HZ,
       .range = QMC5883L_RANGE_2G,
@@ -44,7 +45,7 @@ bool mag_init(app_t *app) {
   };
   if (qmc5883l_init(app->mag, &config) != QMC5883L_OK ||
       qmc5883l_start(app->mag) != QMC5883L_OK) {
-    printf("QMC5883L init failed\n");
+    LOG("QMC5883L init failed\n");
     return false;
   }
   return true;
@@ -57,7 +58,7 @@ void mag_set_running(app_t *app, bool running) {
   qmc5883l_status_t status =
       running ? qmc5883l_start(app->mag) : qmc5883l_standby(app->mag);
   if (status != QMC5883L_OK) {
-    printf("QMC5883L mode change failed: %d\n", status);
+    LOG("QMC5883L mode change failed: %d\n", status);
     app->mag_error = true;
   }
   app->mag_filter_valid = false;
@@ -74,7 +75,7 @@ void mag_update(app_t *app) {
   }
   if (status == QMC5883L_I2C_ERROR || status == QMC5883L_NULL_PTR) {
     if (!app->mag_error) {
-      printf("QMC5883L read failed: %d\n", status);
+      LOG("QMC5883L read failed: %d\n", status);
     }
     app->mag_error = true;
     return;
@@ -128,7 +129,7 @@ void start_mag_calibration(app_t *app) {
   }
   compass_cal_begin(&app->mag_session);
   app->mag_calibrating = true;
-  printf("Magnetometer calibration started\n");
+  LOG("Magnetometer calibration started\n");
   app->refresh_now = true;
 }
 
@@ -141,16 +142,16 @@ void cancel_mag_calibration(app_t *app) {
 }
 
 static void print_mag_calibration(const compass_cal_t *cal) {
-  printf("Magnetometer calibration (RAM only). To keep it, put this in "
-         "board_config.h:\n");
-  printf("#define MAG_CAL_VALID 1\n");
-  printf("#define MAG_CAL_AXIS_MASK 0x%X\n", cal->axis_mask);
-  printf("#define MAG_CAL_OFFSET_X %.3ff\n", (double)cal->offset.x);
-  printf("#define MAG_CAL_OFFSET_Y %.3ff\n", (double)cal->offset.y);
-  printf("#define MAG_CAL_OFFSET_Z %.3ff\n", (double)cal->offset.z);
-  printf("#define MAG_CAL_SCALE_X %.4ff\n", (double)cal->scale.x);
-  printf("#define MAG_CAL_SCALE_Y %.4ff\n", (double)cal->scale.y);
-  printf("#define MAG_CAL_SCALE_Z %.4ff\n", (double)cal->scale.z);
+  LOG("Magnetometer calibration (RAM only). To keep it, put this in "
+      "board_config.h:\n");
+  LOG("#define MAG_CAL_VALID 1\n");
+  LOG("#define MAG_CAL_AXIS_MASK 0x%X\n", cal->axis_mask);
+  LOG("#define MAG_CAL_OFFSET_X %.3ff\n", (double)cal->offset.x);
+  LOG("#define MAG_CAL_OFFSET_Y %.3ff\n", (double)cal->offset.y);
+  LOG("#define MAG_CAL_OFFSET_Z %.3ff\n", (double)cal->offset.z);
+  LOG("#define MAG_CAL_SCALE_X %.4ff\n", (double)cal->scale.x);
+  LOG("#define MAG_CAL_SCALE_Y %.4ff\n", (double)cal->scale.y);
+  LOG("#define MAG_CAL_SCALE_Z %.4ff\n", (double)cal->scale.z);
 }
 
 void finish_mag_calibration(app_t *app) {

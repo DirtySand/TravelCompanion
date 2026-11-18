@@ -8,4 +8,4 @@ target_link_libraries(log_crypto PUBLIC monocypher)
 
 add_library(sd_log STATIC sd_log.c sd_diskio.c)
 target_include_directories(sd_log PUBLIC ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(sd_log PUBLIC sdcard_port fatfs log_crypto sample ds3231 board_config pico_rand pico_stdlib)
+target_link_libraries(sd_log PUBLIC sdcard_port fatfs log_crypto sample ds3231 board_config pico_rand pico_stdlib log)
