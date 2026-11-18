@@ -24,8 +24,6 @@ static void pull_line_low(uint pin) {
   gpio_set_dir(pin, GPIO_OUT);
 }
 
-// A slave that was interrupted mid-byte keeps SDA low until it has been
-// clocked to the end of that byte; a STOP then returns the bus to idle.
 static void recover(void) {
   gpio_init(I2C_SDA_PIN);
   gpio_init(I2C_SCL_PIN);
