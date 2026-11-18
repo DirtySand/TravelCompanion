@@ -7,4 +7,4 @@ add_library(ds3231_port STATIC
     ds3231_port.c
 )
 target_include_directories(ds3231_port PUBLIC ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(ds3231_port PUBLIC ds3231 hardware_i2c board_config)
+target_link_libraries(ds3231_port PUBLIC ds3231 i2c_bus board_config)

@@ -18,7 +18,7 @@ typedef enum {
 void buttons_init(uint32_t long_press_mask);
 uint32_t buttons_take_events(void);
 bool buttons_has_events(void);
-void buttons_wait_release(button_id_t id);
+bool buttons_wait_release(button_id_t id);
 uint8_t buttons_pin(button_id_t id);
 
 #endif // BUTTONS_H

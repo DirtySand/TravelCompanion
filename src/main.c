@@ -3,10 +3,11 @@
 #include "board_config.h"
 #include "ds3231_port.h"
 #include "hardware/clocks.h"
-#include "hardware/i2c.h"
+#include "i2c_bus.h"
 #include "neo6m_port.h"
 #include "pico/rand.h"
 #include "pico/stdio_usb.h"
+#include "power.h"
 #include "sd_log.h"
 #include "sht40_port.h"
 #include "ssd1351_port.h"
@@ -15,6 +16,15 @@
 #define GPS_AUTO_SYNC_DEFAULT false
 #define USB_LOG_WAIT_MS 10000
 #define USB_LOG_POST_CONNECT_MS 50
+#define SELF_TEST_SHOW_MS 5000
+
+typedef enum {
+  FAULT_BME680 = 1u << 0,
+  FAULT_SHT40 = 1u << 1,
+  FAULT_RTC = 1u << 2,
+  FAULT_MAG = 1u << 3,
+  FAULT_IMU = 1u << 4,
+} fault_t;
 
 static app_t app;
 
@@ -50,12 +60,44 @@ static void wait_for_usb_log(ssd1351_t *oled) {
   ui_clear(oled);
 }
 
-static void init_i2c_bus(void) {
-  i2c_init(I2C_PORT, I2C_BAUDRATE);
-  gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
-  gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
-  gpio_pull_up(I2C_SDA_PIN);
-  gpio_pull_up(I2C_SCL_PIN);
+static void halt_with_message(ssd1351_t *oled, const char *message) {
+  printf("Fatal: %s\n", message);
+  ui_clear(oled);
+  ui_draw_centered(oled, 4, "Fatal error", UI_COLOR_RED);
+  ui_draw_centered(oled, 6, message, UI_COLOR_WHITE);
+  while (true) {
+    tight_loop_contents();
+  }
+}
+
+static void show_self_test(ssd1351_t *oled, uint32_t faults) {
+  static const struct {
+    fault_t fault;
+    const char *text;
+  } rows[] = {
+      {FAULT_BME680, "BME680: FAIL"}, {FAULT_SHT40, "SHT40: FAIL"},
+      {FAULT_RTC, "DS3231: FAIL"},    {FAULT_MAG, "QMC5883L: FAIL"},
+      {FAULT_IMU, "ICM20649: FAIL"},
+  };
+  if (faults == 0) {
+    return;
+  }
+  ui_clear(oled);
+  ui_draw_centered(oled, 0, "Self-test", UI_COLOR_YELLOW);
+  uint8_t row = 2;
+  for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+    if (faults & rows[i].fault) {
+      ui_draw_line(oled, row++, rows[i].text, UI_COLOR_RED);
+    }
+  }
+  ui_draw_centered(oled, 9, "Any button: go", UI_COLOR_GRAY);
+  buttons_take_events();
+  absolute_time_t deadline = make_timeout_time_ms(SELF_TEST_SHOW_MS);
+  while (!buttons_has_events() && !time_reached(deadline)) {
+    sleep_ms(10);
+  }
+  buttons_take_events();
+  ui_clear(oled);
 }
 
 static void init_rtc_int_pin(void) {
@@ -81,7 +123,7 @@ static bme680_t *init_bme680(void) {
       bme680_create(I2C_PORT, BME680_I2C_ADDRESS, bme680_port_i2c_read,
                     bme680_port_i2c_write, bme680_port_delay_ms);
   if (bme680 == NULL) {
-    printf("Failed to create BME680 instance\n");
+    printf("BME680 not responding\n");
     return NULL;
   }
   uint8_t chip_id = 0;
@@ -94,12 +136,11 @@ static bme680_t *init_bme680(void) {
   return bme680;
 }
 
-static sht40_t *init_sht40(void) {
+static sht40_t *init_sht40(bool *responding) {
   sht40_t *sht40 =
       sht40_create(I2C_PORT, SHT40_I2C_ADDRESS, sht40_port_i2c_write,
                    sht40_port_i2c_read, sht40_port_delay_ms);
   if (sht40 == NULL) {
-    printf("Failed to create SHT40 instance\n");
     return NULL;
   }
   sht40_status_t status = sht40_soft_reset(sht40);
@@ -113,6 +154,7 @@ static sht40_t *init_sht40(void) {
   } else {
     printf("SHT40 serial: 0x%08lX\n", (unsigned long)serial);
   }
+  *responding = (status == SHT40_OK);
   return sht40;
 }
 
@@ -130,22 +172,23 @@ static neo6m_t *init_gps(void) {
   return gps;
 }
 
-static ds3231_t *init_rtc(bool *time_invalid) {
+static ds3231_t *init_rtc(bool *time_invalid, bool *responding) {
   ds3231_t *ds3231 = ds3231_create(I2C_PORT, DS3231_I2C_ADDRESS,
                                    ds3231_port_i2c_read, ds3231_port_i2c_write);
   if (ds3231 == NULL) {
-    printf("Failed to create DS3231 instance\n");
     return NULL;
   }
-  if (ds3231_set_time_format(ds3231, DS3231_24_HOUR_FORMAT) != DS3231_OK) {
-    printf("DS3231 set time format failed\n");
-    return NULL;
+  *time_invalid = true;
+  *responding =
+      ds3231_set_time_format(ds3231, DS3231_24_HOUR_FORMAT) == DS3231_OK;
+  if (!*responding) {
+    printf("DS3231 not responding\n");
+    return ds3231;
   }
-  *time_invalid = false;
-  ds3231_status_t status =
-      ds3231_check_oscillator_stopped(ds3231, time_invalid);
-  if (status != DS3231_OK || *time_invalid) {
-    *time_invalid = true;
+  bool stopped = true;
+  ds3231_status_t status = ds3231_check_oscillator_stopped(ds3231, &stopped);
+  *time_invalid = (status != DS3231_OK) || stopped;
+  if (*time_invalid) {
     printf("DS3231 time invalid\n");
   }
   ds3231_enable_alarm1_interrupt(ds3231, true);
@@ -190,29 +233,38 @@ static void init_app_state(app_t *app, bool time_invalid) {
 int main() {
   set_sys_clock_khz(SYS_CLOCK_KHZ, true);
   stdio_init_all();
-  init_i2c_bus();
+  i2c_bus_init();
   buttons_init(BUTTON_MASK(BUTTON_BACK) | BUTTON_MASK(BUTTON_OK));
   init_rtc_int_pin();
   ssd1351_t *oled = init_oled();
   wait_for_usb_log(oled);
 
+  uint32_t faults = 0;
   bme680_t *bme680 = init_bme680();
   if (bme680 == NULL) {
-    return -1;
+    faults |= FAULT_BME680;
   }
-  sht40_t *sht40 = init_sht40();
+  bool sht40_responding = false;
+  sht40_t *sht40 = init_sht40(&sht40_responding);
   if (sht40 == NULL) {
-    return -1;
+    halt_with_message(oled, "SHT40 driver");
+  }
+  if (!sht40_responding) {
+    faults |= FAULT_SHT40;
   }
   sd_log_init();
   neo6m_t *gps = init_gps();
   if (gps == NULL) {
-    return -1;
+    halt_with_message(oled, "GPS driver");
   }
-  bool time_invalid = false;
-  ds3231_t *ds3231 = init_rtc(&time_invalid);
+  bool time_invalid = true;
+  bool rtc_responding = false;
+  ds3231_t *ds3231 = init_rtc(&time_invalid, &rtc_responding);
   if (ds3231 == NULL) {
-    return -1;
+    halt_with_message(oled, "RTC driver");
+  }
+  if (!rtc_responding) {
+    faults |= FAULT_RTC;
   }
 
   app.oled = oled;
@@ -221,6 +273,17 @@ int main() {
   app.ds3231 = ds3231;
   app.gps = gps;
   init_app_state(&app, time_invalid);
+  if (!app.mag_ok) {
+    faults |= FAULT_MAG;
+  }
+  if (!app.imu_ok) {
+    faults |= FAULT_IMU;
+  }
+  show_self_test(oled, faults);
+  if (power_watchdog_caused_reboot()) {
+    show_error(&app, "Watchdog reset");
+  }
+  power_watchdog_start();
 
   absolute_time_t next_refresh = get_absolute_time();
   while (true) {

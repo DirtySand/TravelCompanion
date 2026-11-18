@@ -63,23 +63,36 @@ bool schedule_from_now(app_t *app) {
 // ---------------------------------------------------------------------------
 
 bool read_climate(sht40_t *sht40, float *temperature, float *humidity) {
+  static bool failing = false;
   sht40_status_t status =
       sht40_measure(sht40, SHT40_PRECISION_HIGH, temperature, humidity);
   if (status != SHT40_OK) {
-    printf("SHT40 measurement failed: %d\n", status);
+    if (!failing) {
+      printf("SHT40 measurement failed: %d\n", status);
+    }
+    failing = true;
     return false;
   }
+  failing = false;
   return true;
 }
 
 bool read_pressure(bme680_t *bme680, float *pressure) {
+  static bool failing = false;
+  if (bme680 == NULL) {
+    return false;
+  }
   float temperature, humidity;
   bme680_status_t status =
       bme680_read_measurement_forced(bme680, &temperature, pressure, &humidity);
   if (status != BME680_OK) {
-    printf("BME680 measurement failed: %d\n", status);
+    if (!failing) {
+      printf("BME680 measurement failed: %d\n", status);
+    }
+    failing = true;
     return false;
   }
+  failing = false;
   return true;
 }
 

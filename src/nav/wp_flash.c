@@ -1,5 +1,6 @@
 #include "wp_flash.h"
 #include "hardware/flash.h"
+#include "hardware/watchdog.h"
 #include "pico/flash.h"
 #include <string.h>
 
@@ -45,6 +46,7 @@ static bool erase_all(void *ctx) {
   for (uint32_t offset = 0; offset < WP_FLASH_REGION_SIZE;
        offset += FLASH_SECTOR_SIZE) {
     flash_op_t op = {.offset = REGION_OFFSET + offset, .data = NULL};
+    watchdog_update();
     if (flash_safe_execute(do_erase, &op, SAFE_TIMEOUT_MS) != PICO_OK) {
       return false;
     }

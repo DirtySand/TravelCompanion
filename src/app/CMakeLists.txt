@@ -14,7 +14,7 @@ add_library(app STATIC
 )
 target_include_directories(app PUBLIC ${CMAKE_CURRENT_LIST_DIR})
 target_link_libraries(app PUBLIC
-    pico_stdlib hardware_i2c hardware_clocks pico_rand board_config
+    pico_stdlib hardware_i2c hardware_clocks pico_rand board_config i2c_bus
     bme680_port ssd1351_port ds3231_port sht40_port neo6m_port qmc5883l_port icm20649_port
     buttons power timezone datetime_utils time_sync
     ui compass motion nav wp_flash sample sd_log

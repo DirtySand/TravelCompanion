@@ -105,12 +105,18 @@ uint32_t buttons_take_events(void) {
 
 bool buttons_has_events(void) { return pending_events != 0; }
 
-void buttons_wait_release(button_id_t id) {
+bool buttons_wait_release(button_id_t id) {
+  absolute_time_t deadline = make_timeout_time_ms(BUTTON_RELEASE_TIMEOUT_MS);
   while (gpio_get(button_pins[id]) == 0) {
+    if (time_reached(deadline)) {
+      buttons_take_events();
+      return false;
+    }
     tight_loop_contents();
   }
   sleep_ms(BUTTON_RELEASE_SETTLE_MS);
   buttons_take_events();
+  return true;
 }
 
 uint8_t buttons_pin(button_id_t id) { return button_pins[id]; }

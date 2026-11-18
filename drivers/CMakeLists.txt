@@ -1,3 +1,4 @@
+add_subdirectory(i2c_bus)
 add_subdirectory(bme680)
 add_subdirectory(SSD1351U3)
 add_subdirectory(ds3231)

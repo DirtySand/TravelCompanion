@@ -1,6 +1,7 @@
 #include "app.h"
 #include "board_config.h"
 #include "datetime_utils.h"
+#include "i2c_bus.h"
 #include "timezone.h"
 #include <stdio.h>
 
@@ -20,6 +21,16 @@ void set_status(app_t *app, const char *text, uint16_t color) {
 void show_error(app_t *app, const char *message) {
   printf("%s\n", message);
   set_status(app, message, UI_COLOR_RED);
+}
+
+void report_i2c_timeouts(app_t *app) {
+  static uint32_t reported = 0;
+  uint32_t count = i2c_bus_timeout_count();
+  if (count != reported) {
+    reported = count;
+    printf("I2C timeouts: %lu\n", (unsigned long)count);
+    set_status(app, "I2C timeout", UI_COLOR_RED);
+  }
 }
 
 bool status_active(const app_t *app) {

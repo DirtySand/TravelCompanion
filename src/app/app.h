@@ -210,6 +210,7 @@ typedef struct {
 // app_common.c
 void set_status(app_t *app, const char *text, uint16_t color);
 void show_error(app_t *app, const char *message);
+void report_i2c_timeouts(app_t *app);
 bool status_active(const app_t *app);
 int64_t ms_since(absolute_time_t since);
 bool rtc_now(app_t *app, ds3231_datetime_t *utc, uint32_t *seconds);

@@ -77,18 +77,18 @@ static uint32_t sleep_until_event(app_t *app) {
   neo6m_port_hw_init();
 
   uint32_t events = 0;
-  if (wake & POWER_PIN_MASK(ok_pin)) {
-    buttons_wait_release(BUTTON_OK);
+  if ((wake & POWER_PIN_MASK(ok_pin)) && buttons_wait_release(BUTTON_OK)) {
     events |= BUTTON_MASK(BUTTON_OK);
   }
-  if (wake & POWER_PIN_MASK(back_pin)) {
-    buttons_wait_release(BUTTON_BACK);
+  if ((wake & POWER_PIN_MASK(back_pin)) && buttons_wait_release(BUTTON_BACK)) {
     events |= BUTTON_MASK(BUTTON_BACK);
   }
+  power_watchdog_kick();
   return events;
 }
 
 void run_backpack_cycle(app_t *app) {
+  power_watchdog_kick();
   uint32_t events =
       app->view_active ? wait_while_view_active(app) : sleep_until_event(app);
 

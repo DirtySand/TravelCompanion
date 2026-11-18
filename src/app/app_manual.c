@@ -1,4 +1,5 @@
 #include "app.h"
+#include "power.h"
 
 #define MANUAL_REFRESH_MS 1000
 #define REFRESH_PHASE_SHIFT_MS 500
@@ -87,9 +88,11 @@ static void handle_manual_buttons(app_t *app, uint32_t pressed) {
 }
 
 void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
+  power_watchdog_kick();
   gps_service(app);
   gps_commands_service(app);
   check_time_sync_timeout(app);
+  report_i2c_timeouts(app);
   if (rtc_alarm_pending() && !handle_sample_alarm(app)) {
     show_error(app, "RTC error");
   }

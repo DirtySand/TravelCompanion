@@ -8,4 +8,4 @@ add_library(bme680_port STATIC
     bme680_port.c
 )
 target_include_directories(bme680_port PUBLIC ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(bme680_port PUBLIC bme680 hardware_i2c pico_time)
+target_link_libraries(bme680_port PUBLIC bme680 i2c_bus pico_time)
