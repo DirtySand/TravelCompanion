@@ -1,10 +1,18 @@
 #include "app.h"
 #include "board_config.h"
+#include "datetime_utils.h"
 #include "neo6m_port.h"
 #include "power.h"
 #include "sd_log.h"
 
 #define BACKPACK_VIEW_MS 2000
+
+static void flush_log(app_t *app) {
+  ds3231_datetime_t now;
+  if (ds3231_read_datetime(app->ds3231, &now) == DS3231_OK) {
+    sd_log_flush(datetime_to_seconds(&now, CENTURY_BASE));
+  }
+}
 
 static void show_backpack_view(app_t *app) {
   ds3231_datetime_t now;
@@ -32,6 +40,11 @@ void enter_backpack_mode(app_t *app) {
     return;
   }
   gps_commands_finish(app);
+  app->trip_paused_by_backpack = trip_running(&app->trip);
+  if (app->trip_paused_by_backpack) {
+    trip_toggle(&app->trip, time_us_64());
+  }
+  flush_log(app);
   mag_set_running(app, false);
   imu_set_running(app, false);
   app->mode = MODE_BACKPACK;
@@ -50,6 +63,15 @@ static void leave_backpack_mode(app_t *app) {
   app->shift_at = make_timeout_time_ms(BURN_IN_SHIFT_MS);
   app->clear_screen = true;
   app->shown_second_valid = false;
+  fusion_invalidate_position(&app->fusion);
+  bool line_reset = app->line_stage != CARDS_LINE_SET_A;
+  app->line_stage = CARDS_LINE_SET_A;
+  if (app->trip_paused_by_backpack) {
+    app->trip_paused_by_backpack = false;
+    set_status(app, "Trip paused", UI_COLOR_YELLOW);
+  } else if (line_reset) {
+    set_status(app, "Line reset", UI_COLOR_GRAY);
+  }
   buttons_take_events();
 }
 

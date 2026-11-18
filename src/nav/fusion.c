@@ -52,7 +52,10 @@ static void restart_at(fusion_t *f, float east_m, float north_m, float r) {
   f->distance_since_m = 0.0f;
   f->idle_s = 0.0f;
   f->rejects = 0;
+  f->position_lost = false;
 }
+
+void fusion_invalidate_position(fusion_t *f) { f->position_lost = true; }
 
 bool fusion_update_gps(fusion_t *f, int32_t lat_e7, int32_t lon_e7,
                        float hdop, float moving_without_steps_m) {
@@ -76,6 +79,12 @@ bool fusion_update_gps(fusion_t *f, int32_t lat_e7, int32_t lon_e7,
 
   float z_east, z_north;
   geo_to_local(&f->origin, lat_e7, lon_e7, &z_east, &z_north);
+  if (f->position_lost) {
+    f->resets++;
+    restart_at(f, z_east, z_north, r);
+    f->updates++;
+    return true;
+  }
   float p = predicted_variance(f);
   if (moving_without_steps_m > 0.0f) {
     p += moving_without_steps_m * moving_without_steps_m;

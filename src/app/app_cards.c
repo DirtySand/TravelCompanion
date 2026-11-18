@@ -12,6 +12,8 @@
 #define PDR_REFRESH_MS 200
 #define TOOLS_REFRESH_MS 500
 #define LINE_REFRESH_MS 300
+#define ENV_CARD_CLIMATE_MAX_AGE_MS 900
+#define ENV_CARD_PRESSURE_MAX_AGE_MS 1500
 
 static const char *const card_titles[CARD_COUNT] = {
     [CARD_ENVIRONMENT] = "ENV", [CARD_POSITION] = "POS",
@@ -215,8 +217,10 @@ static void draw_environment_card(app_t *app, bool scheduled) {
   }
 
   ui_environment_t env = {0};
-  env.climate_valid = read_climate(app->sht40, &env.temperature, &env.humidity);
-  env.pressure_valid = read_pressure(app->bme680, &env.pressure);
+  env.climate_valid = env_climate(app, ENV_CARD_CLIMATE_MAX_AGE_MS,
+                                  &env.temperature, &env.humidity);
+  env.pressure_valid =
+      env_pressure(app, ENV_CARD_PRESSURE_MAX_AGE_MS, &env.pressure);
 
   ui_draw_environment_card(app->oled, &env,
                            (ds3231_status == DS3231_OK) ? &datetime : NULL,

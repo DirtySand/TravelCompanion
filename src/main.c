@@ -237,6 +237,7 @@ int main() {
   i2c_bus_init();
   buttons_init(BUTTON_MASK(BUTTON_BACK) | BUTTON_MASK(BUTTON_OK));
   init_rtc_int_pin();
+  sd_log_init();
   ssd1351_t *oled = init_oled();
   wait_for_usb_log(oled);
 
@@ -253,7 +254,6 @@ int main() {
   if (!sht40_responding) {
     faults |= FAULT_SHT40;
   }
-  sd_log_init();
   neo6m_t *gps = init_gps();
   if (gps == NULL) {
     halt_with_message(oled, "GPS driver");

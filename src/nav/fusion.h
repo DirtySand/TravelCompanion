@@ -30,6 +30,7 @@ typedef struct {
   float distance_since_m;
   float idle_s;
   uint8_t rejects;
+  bool position_lost;
   uint32_t updates;
   uint32_t rejected;
   uint32_t resets;
@@ -43,6 +44,8 @@ void fusion_predict(fusion_t *f, float d_east_m, float d_north_m);
 void fusion_step_unknown(fusion_t *f, float distance_m);
 
 void fusion_idle(fusion_t *f, float dt_s);
+
+void fusion_invalidate_position(fusion_t *f);
 
 bool fusion_update_gps(fusion_t *f, int32_t lat_e7, int32_t lon_e7,
                        float hdop, float moving_without_steps_m);

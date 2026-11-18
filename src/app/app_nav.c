@@ -81,7 +81,7 @@ static void nav_baro(app_t *app) {
   app->baro_seen = true;
   app->baro_at = make_timeout_time_ms(BARO_PERIOD_MS);
   float pressure_pa;
-  if (read_pressure(app->bme680, &pressure_pa)) {
+  if (env_pressure(app, 0, &pressure_pa)) {
     alt_update(&app->alt, pressure_pa, dt_s, trip_running(&app->trip));
   } else {
     app->baro_at = make_timeout_time_ms(BARO_RETRY_MS);

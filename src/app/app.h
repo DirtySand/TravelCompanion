@@ -180,6 +180,16 @@ typedef struct {
   bool dr_steps_no_heading;
   float track_m;
   uint32_t session;
+  bool trip_paused_by_backpack;
+  bool climate_seen;
+  bool climate_valid;
+  float climate_temperature_c;
+  float climate_humidity_pct;
+  absolute_time_t climate_at;
+  bool pressure_seen;
+  bool pressure_valid;
+  float pressure_pa;
+  absolute_time_t pressure_at;
   bool steps_since_fix;
   bool nav_fix_seen;
   absolute_time_t nav_fix_at;
@@ -220,8 +230,9 @@ uint16_t local_minutes(int64_t utc_s);
 
 // app_sampling.c
 bool schedule_from_now(app_t *app);
-bool read_climate(sht40_t *sht40, float *temperature, float *humidity);
-bool read_pressure(bme680_t *bme680, float *pressure);
+bool env_climate(app_t *app, uint32_t max_age_ms, float *temperature,
+                 float *humidity);
+bool env_pressure(app_t *app, uint32_t max_age_ms, float *pressure);
 bool handle_sample_alarm(app_t *app);
 bool rtc_alarm_pending(void);
 

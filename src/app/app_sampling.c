@@ -5,6 +5,8 @@
 #include "sd_log.h"
 #include <stdio.h>
 
+#define ENV_SAMPLE_MAX_AGE_MS 1500
+
 // ---------------------------------------------------------------------------
 // Sample schedule (DS3231 alarm 1, same in both modes)
 // ---------------------------------------------------------------------------
@@ -62,7 +64,7 @@ bool schedule_from_now(app_t *app) {
 // Sampling and logging
 // ---------------------------------------------------------------------------
 
-bool read_climate(sht40_t *sht40, float *temperature, float *humidity) {
+static bool read_climate(sht40_t *sht40, float *temperature, float *humidity) {
   static bool failing = false;
   sht40_status_t status =
       sht40_measure(sht40, SHT40_PRECISION_HIGH, temperature, humidity);
@@ -77,7 +79,7 @@ bool read_climate(sht40_t *sht40, float *temperature, float *humidity) {
   return true;
 }
 
-bool read_pressure(bme680_t *bme680, float *pressure) {
+static bool read_pressure(bme680_t *bme680, float *pressure) {
   static bool failing = false;
   if (bme680 == NULL) {
     return false;
@@ -94,6 +96,29 @@ bool read_pressure(bme680_t *bme680, float *pressure) {
   }
   failing = false;
   return true;
+}
+
+bool env_climate(app_t *app, uint32_t max_age_ms, float *temperature,
+                 float *humidity) {
+  if (!app->climate_seen || ms_since(app->climate_at) > (int64_t)max_age_ms) {
+    app->climate_valid = read_climate(app->sht40, &app->climate_temperature_c,
+                                      &app->climate_humidity_pct);
+    app->climate_at = get_absolute_time();
+    app->climate_seen = true;
+  }
+  *temperature = app->climate_temperature_c;
+  *humidity = app->climate_humidity_pct;
+  return app->climate_valid;
+}
+
+bool env_pressure(app_t *app, uint32_t max_age_ms, float *pressure) {
+  if (!app->pressure_seen || ms_since(app->pressure_at) > (int64_t)max_age_ms) {
+    app->pressure_valid = read_pressure(app->bme680, &app->pressure_pa);
+    app->pressure_at = get_absolute_time();
+    app->pressure_seen = true;
+  }
+  *pressure = app->pressure_pa;
+  return app->pressure_valid;
 }
 
 static void fill_gps(const app_t *app, sample_t *s, bool data_received) {
@@ -133,8 +158,11 @@ static void take_sample(app_t *app, const ds3231_datetime_t *scheduled) {
       (app->mode == MODE_BACKPACK) ? SAMPLE_MODE_BACKPACK : SAMPLE_MODE_MANUAL;
   bool gps_data = (app->mode == MODE_BACKPACK) ? gps_wait_for_epoch(app)
                                                : gps_is_fresh(app);
-  s.climate_valid = read_climate(app->sht40, &s.temperature_c, &s.humidity_pct);
-  s.pressure_valid = read_pressure(app->bme680, &s.pressure_pa);
+  uint32_t max_age_ms =
+      (app->mode == MODE_BACKPACK) ? 0 : ENV_SAMPLE_MAX_AGE_MS;
+  s.climate_valid =
+      env_climate(app, max_age_ms, &s.temperature_c, &s.humidity_pct);
+  s.pressure_valid = env_pressure(app, max_age_ms, &s.pressure_pa);
   fill_gps(app, &s, gps_data);
 
   char line[SAMPLE_CSV_MAX];
