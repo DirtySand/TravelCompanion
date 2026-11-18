@@ -1,5 +1,6 @@
 #include "bme680_port.h"
 #include "hardware/i2c.h"
+#include "pico/time.h"
 
 int bme680_port_i2c_read(void *ctx, uint8_t dev_addr, uint8_t reg_addr,
                          uint8_t *data, uint8_t length) {
@@ -25,4 +26,9 @@ int bme680_port_i2c_write(void *ctx, uint8_t dev_addr, uint8_t reg_addr,
     buffer[i + 1] = data[i];
   }
   return i2c_write_blocking(i2c, dev_addr, buffer, length + 1, false);
+}
+
+void bme680_port_delay_ms(void *ctx, uint32_t ms) {
+  (void)ctx;
+  sleep_ms(ms);
 }

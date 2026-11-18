@@ -77,8 +77,9 @@ static ssd1351_t *init_oled(void) {
 }
 
 static bme680_t *init_bme680(void) {
-  bme680_t *bme680 = bme680_create(I2C_PORT, BME680_I2C_ADDRESS,
-                                   bme680_port_i2c_read, bme680_port_i2c_write);
+  bme680_t *bme680 =
+      bme680_create(I2C_PORT, BME680_I2C_ADDRESS, bme680_port_i2c_read,
+                    bme680_port_i2c_write, bme680_port_delay_ms);
   if (bme680 == NULL) {
     printf("Failed to create BME680 instance\n");
     return NULL;

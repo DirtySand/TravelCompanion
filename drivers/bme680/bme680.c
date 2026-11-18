@@ -13,15 +13,15 @@
 #define BME680_IIR_ADDR 0x75 // config_filter<4:2>
 #define BME680_CTRL_HUM_ADDR 0x72 // osrs_h<2:0>
 #define BME680_CTRL_MEAS_ADDR 0x74 // osrs_t<7:5>, osrs_p<4:2>, mode<1:0>
-#define BME680_PRESSURE_MSB_ADDR 0x1F
-#define BME680_PRESSURE_LSB_ADDR 0x20
-#define BME680_PRESSURE_XLSB_ADDR 0x21 // 7:4
-#define BME680_TEMPERATURE_MSB_ADDR 0x22
-#define BME680_TEMPERATURE_LSB_ADDR 0x23
-#define BME680_TEMPERATURE_XLSB_ADDR 0x24 // 7:4
-#define BME680_HUMIDITY_MSB_ADDR 0x25
-#define BME680_HUMIDITY_LSB_ADDR 0x26
-#define BME680_MEAS_STATUS_ADDR 0x1D // measuring<5>, new_data<0>
+#define BME680_MEAS_STATUS_ADDR 0x1D // new_data_0<7>, measuring<5>
+#define BME680_MEAS_STATUS_NEW_DATA (1u << 7)
+#define BME680_MEAS_STATUS_MEASURING (1u << 5)
+#define BME680_DATA_START 0x1F // press 0x1F-0x21, temp 0x22-0x24, hum 0x25-0x26
+#define BME680_DATA_LENGTH 8
+#define BME680_CTRL_MEAS_FORCED 0x25 // osrs_t x1, osrs_p x1, mode forced
+#define BME680_FIRST_POLL_MS 5
+#define BME680_POLL_MS 2
+#define BME680_MEASUREMENT_TIMEOUT_MS 60
 
 static const uint8_t BME680_REG_CHIP_ID = 0xD0;
 
@@ -43,7 +43,7 @@ bme680_status_t bme680_read_chip_id(bme680_t *dev, uint8_t *chip_id) {
   return BME680_OK;
 }
 
-bme680_status_t bme680_set_calib(bme680_t *dev) {
+static bme680_status_t bme680_set_calib(bme680_t *dev) {
   if (dev == NULL) {
     return BME680_NULL_PTR;
   }
@@ -85,7 +85,7 @@ bme680_status_t bme680_set_calib(bme680_t *dev) {
       (int16_t)(buffer_a[0x97 - BME680_BLOCK_A_START] << 8 |
                 buffer_a[0x96 - BME680_BLOCK_A_START]);
   dev->calib.press_calib.par_p6 =
-      (uint8_t)buffer_a[0x99 - BME680_BLOCK_A_START];
+      (int8_t)buffer_a[0x99 - BME680_BLOCK_A_START];
   dev->calib.press_calib.par_p7 = (int8_t)buffer_a[0x98 - BME680_BLOCK_A_START];
   dev->calib.press_calib.par_p8 =
       (int16_t)(buffer_a[0x9D - BME680_BLOCK_A_START] << 8 |
@@ -111,74 +111,62 @@ bme680_status_t bme680_set_calib(bme680_t *dev) {
   return BME680_OK;
 }
 
-bme680_status_t bme680_set_hum_oversampling(bme680_t *dev, uint8_t osrs_h) {
-  if (dev == NULL) {
-    return BME680_NULL_PTR;
-  }
-  uint8_t ctrl_hum = osrs_h & 0b00000111;
-  uint8_t bme_hum_write_result = dev->i2c_write(
-      dev->ctx, dev->dev_addr, BME680_CTRL_HUM_ADDR, &ctrl_hum, 1);
-  if (bme_hum_write_result < 0) {
-    return BME680_I2C_ERROR;
-  }
-  return BME680_OK;
+static bme680_status_t write_register(bme680_t *dev, uint8_t reg,
+                                      uint8_t value) {
+  int result = dev->i2c_write(dev->ctx, dev->dev_addr, reg, &value, 1);
+  return (result < 0) ? BME680_I2C_ERROR : BME680_OK;
 }
 
-bme680_status_t bme680_set_config_register(bme680_t *dev, uint8_t config) {
+static bme680_status_t bme680_set_hum_oversampling(bme680_t *dev,
+                                                   uint8_t osrs_h) {
   if (dev == NULL) {
     return BME680_NULL_PTR;
   }
-  uint8_t config_value = config & 0b00011100;
-  uint8_t bme_config_write_result = dev->i2c_write(
-      dev->ctx, dev->dev_addr, BME680_IIR_ADDR, &config_value, 1);
-  if (bme_config_write_result < 0) {
-    return BME680_I2C_ERROR;
-  }
-  return BME680_OK;
+  return write_register(dev, BME680_CTRL_HUM_ADDR, osrs_h & 0b00000111);
 }
 
-bme680_status_t bme680_set_ctrl_meas_register(bme680_t *dev,
-                                              uint8_t ctrl_meas) {
+static bme680_status_t bme680_set_config_register(bme680_t *dev,
+                                                  uint8_t config) {
   if (dev == NULL) {
     return BME680_NULL_PTR;
   }
-  uint8_t bme_ctrl_meas_write_result = dev->i2c_write(
-      dev->ctx, dev->dev_addr, BME680_CTRL_MEAS_ADDR, &ctrl_meas, 1);
-  if (bme_ctrl_meas_write_result < 0) {
-    return BME680_I2C_ERROR;
-  }
-  return BME680_OK;
+  return write_register(dev, BME680_IIR_ADDR, config & 0b00011100);
 }
 
-bme680_status_t bme680_set_parameters(bme680_t *dev, uint8_t config,
-                                      uint8_t hum_oversampling,
-                                      uint8_t ctrl_meas) {
+static bme680_status_t bme680_set_ctrl_meas_register(bme680_t *dev,
+                                                     uint8_t ctrl_meas) {
   if (dev == NULL) {
     return BME680_NULL_PTR;
   }
-  if (bme680_set_hum_oversampling(dev, hum_oversampling) != BME680_OK) {
-    return BME680_I2C_ERROR;
+  return write_register(dev, BME680_CTRL_MEAS_ADDR, ctrl_meas);
+}
+
+static bme680_status_t bme680_set_parameters(bme680_t *dev, uint8_t config,
+                                             uint8_t hum_oversampling,
+                                             uint8_t ctrl_meas) {
+  if (dev == NULL) {
+    return BME680_NULL_PTR;
   }
-  if (bme680_set_config_register(dev, config) != BME680_OK) {
-    return BME680_I2C_ERROR;
+  bme680_status_t status = bme680_set_hum_oversampling(dev, hum_oversampling);
+  if (status == BME680_OK) {
+    status = bme680_set_config_register(dev, config);
   }
-  if (bme680_set_ctrl_meas_register(dev, ctrl_meas) != BME680_OK) {
-    return BME680_I2C_ERROR;
+  if (status == BME680_OK) {
+    status = bme680_set_ctrl_meas_register(dev, ctrl_meas);
   }
-  return BME680_OK;
+  return status;
 }
 
 bme680_status_t bme680_init(bme680_t *dev) {
   if (dev == NULL) {
     return BME680_NULL_PTR;
   }
-  uint8_t ctrl_meas =
-      0b00100101; // osrs_t=001 (x1), osrs_p=001 (x1), mode=01 (forced)
-  return bme680_set_parameters(dev, 0, 1, ctrl_meas);
+  return bme680_set_parameters(dev, 0, 1, BME680_CTRL_MEAS_FORCED);
 }
 
-bme680_status_t bme680_get_measurement_status(bme680_t *dev, uint8_t *measuring,
-                                              uint8_t *new_data) {
+static bme680_status_t bme680_get_measurement_status(bme680_t *dev,
+                                                     bool *measuring,
+                                                     bool *new_data) {
   if (dev == NULL || measuring == NULL || new_data == NULL) {
     return BME680_NULL_PTR;
   }
@@ -188,40 +176,37 @@ bme680_status_t bme680_get_measurement_status(bme680_t *dev, uint8_t *measuring,
   if (result < 0) {
     return BME680_I2C_ERROR;
   }
-  *measuring = meas_status & 0b00100000;
-  *new_data = meas_status & 0b1000000;
+  *measuring = (meas_status & BME680_MEAS_STATUS_MEASURING) != 0;
+  *new_data = (meas_status & BME680_MEAS_STATUS_NEW_DATA) != 0;
   return BME680_OK;
 }
 
-bool bme680_is_measuring(bme680_t *dev) {
-  if (dev == NULL) {
-    return false;
-  }
-  uint8_t measuring, new_data;
-  if (bme680_get_measurement_status(dev, &measuring, &new_data) != BME680_OK) {
-    return false;
-  }
-  return measuring == 0b00100000;
-}
-
-bool bme680_is_new_data_available(bme680_t *dev) {
-  if (dev == NULL) {
-    return false;
-  }
-  uint8_t measuring, new_data;
-  if (bme680_get_measurement_status(dev, &measuring, &new_data) != BME680_OK) {
-    return false;
-  }
-  return new_data == 0b0000001;
-}
-
-bme680_status_t bme680_start_forced_measurement(bme680_t *dev) {
+static bme680_status_t bme680_start_forced_measurement(bme680_t *dev) {
   if (dev == NULL) {
     return BME680_NULL_PTR;
   }
-  uint8_t ctrl_meas =
-      0b00100101; // osrs_t=001 (x1), osrs_p=001 (x1), mode=01 (forced)
-  return bme680_set_ctrl_meas_register(dev, ctrl_meas);
+  return bme680_set_ctrl_meas_register(dev, BME680_CTRL_MEAS_FORCED);
+}
+
+static bme680_status_t wait_measurement_done(bme680_t *dev) {
+  dev->delay_ms(dev->ctx, BME680_FIRST_POLL_MS);
+  uint32_t waited_ms = BME680_FIRST_POLL_MS;
+  while (true) {
+    bool measuring, new_data;
+    bme680_status_t status =
+        bme680_get_measurement_status(dev, &measuring, &new_data);
+    if (status != BME680_OK) {
+      return status;
+    }
+    if (!measuring) {
+      return BME680_OK;
+    }
+    if (waited_ms >= BME680_MEASUREMENT_TIMEOUT_MS) {
+      return BME680_TIMEOUT;
+    }
+    dev->delay_ms(dev->ctx, BME680_POLL_MS);
+    waited_ms += BME680_POLL_MS;
+  }
 }
 
 bme680_status_t bme680_read_measurement_forced(bme680_t *dev,
@@ -232,84 +217,53 @@ bme680_status_t bme680_read_measurement_forced(bme680_t *dev,
       humidity == NULL) {
     return BME680_NULL_PTR;
   }
-  uint8_t meas_status;
-  uint8_t pressure_msb, pressure_lsb, pressure_xlsb;
-  uint8_t temperature_msb, temperature_lsb, temperature_xlsb;
-  uint8_t humidity_msb, humidity_lsb;
-
   bme680_status_t status = bme680_start_forced_measurement(dev);
   if (status != BME680_OK) {
     return status;
   }
-
-  bme680_start_forced_measurement(dev);
-  uint8_t check;
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_CTRL_MEAS_ADDR, &check, 1);
-
-  uint8_t raw;
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_MEAS_STATUS_ADDR, &raw, 1);
-
-  int i = 0;
-  while (bme680_is_new_data_available(dev) && i < 100) {
-    i++;
-  }
-  if (i >= 100) {
-    return BME680_TIMEOUT;
+  status = wait_measurement_done(dev);
+  if (status != BME680_OK) {
+    return status;
   }
 
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_PRESSURE_MSB_ADDR,
-                &pressure_msb, 1);
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_PRESSURE_LSB_ADDR,
-                &pressure_lsb, 1);
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_PRESSURE_XLSB_ADDR,
-                &pressure_xlsb, 1);
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_TEMPERATURE_MSB_ADDR,
-                &temperature_msb, 1);
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_TEMPERATURE_LSB_ADDR,
-                &temperature_lsb, 1);
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_TEMPERATURE_XLSB_ADDR,
-                &temperature_xlsb, 1);
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_HUMIDITY_MSB_ADDR,
-                &humidity_msb, 1);
-  dev->i2c_read(dev->ctx, dev->dev_addr, BME680_HUMIDITY_LSB_ADDR,
-                &humidity_lsb, 1);
-
-  uint32_t temperature_adc, pressure_adc, humidity_adc;
-
-  temperature_adc = ((uint32_t)temperature_msb << 12) |
-                    ((uint32_t)temperature_lsb << 4) |
-                    ((uint32_t)(temperature_xlsb >> 4));
-  pressure_adc = ((uint32_t)pressure_msb << 12) |
-                 ((uint32_t)pressure_lsb << 4) |
-                 ((uint32_t)(pressure_xlsb >> 4));
-  humidity_adc = ((uint32_t)humidity_msb << 8) | ((uint32_t)humidity_lsb);
+  uint8_t data[BME680_DATA_LENGTH];
+  int result = dev->i2c_read(dev->ctx, dev->dev_addr, BME680_DATA_START, data,
+                             BME680_DATA_LENGTH);
+  if (result < 0) {
+    return BME680_I2C_ERROR;
+  }
+  uint32_t pressure_adc = ((uint32_t)data[0] << 12) | ((uint32_t)data[1] << 4) |
+                          ((uint32_t)data[2] >> 4);
+  uint32_t temperature_adc = ((uint32_t)data[3] << 12) |
+                             ((uint32_t)data[4] << 4) |
+                             ((uint32_t)data[5] >> 4);
+  uint32_t humidity_adc = ((uint32_t)data[6] << 8) | (uint32_t)data[7];
 
   *temperature = bme680_compensate_temperature(dev, temperature_adc);
   *pressure = bme680_compensate_pressure(dev, pressure_adc);
   *humidity = bme680_compensate_humidity(dev, humidity_adc);
-
   return BME680_OK;
 }
 
 bme680_t *bme680_create(void *ctx, uint8_t dev_addr,
                         bme680_i2c_read_fn i2c_read,
-                        bme680_i2c_write_fn i2c_write) {
-  if (i2c_read == NULL || i2c_write == NULL) {
+                        bme680_i2c_write_fn i2c_write,
+                        bme680_delay_ms_fn delay_ms) {
+  if (i2c_read == NULL || i2c_write == NULL || delay_ms == NULL) {
     return NULL;
   }
-
   if (instance_used) {
     return NULL;
   }
-
   instance.ctx = ctx;
   instance.dev_addr = dev_addr;
   instance.i2c_read = i2c_read;
   instance.i2c_write = i2c_write;
-  if (bme680_set_calib(&instance) != BME680_OK) {
+  instance.delay_ms = delay_ms;
+  if (bme680_set_calib(&instance) != BME680_OK ||
+      bme680_init(&instance) != BME680_OK) {
     return NULL;
   }
-  bme680_init(&instance);
   instance_used = 1;
   return &instance;
 }

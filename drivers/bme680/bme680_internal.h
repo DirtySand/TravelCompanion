@@ -15,7 +15,7 @@ struct bme680_calib_pressure {
   int8_t par_p3;
   int16_t par_p4;
   int16_t par_p5;
-  uint8_t par_p6;
+  int8_t par_p6;
   int8_t par_p7;
   int16_t par_p8;
   int16_t par_p9;
@@ -45,5 +45,6 @@ struct bme680 {
   float t_fine;
   bme680_i2c_read_fn i2c_read;
   bme680_i2c_write_fn i2c_write;
+  bme680_delay_ms_fn delay_ms;
 };
 #endif // BME680_INTERNAL_H
