@@ -44,14 +44,14 @@ typedef struct {
   bool filter_ready;
   float stage1;
   float stage2;
-  float time_s;
+  uint64_t time_us;
   steps_phase_t phase;
   float peak;
-  float peak_time_s;
+  uint64_t peak_time_us;
   float valley;
-  float valley_time_s;
+  uint64_t valley_time_us;
   bool have_step;
-  float last_step_time_s;
+  uint64_t last_step_time_us;
   uint8_t pending_steps;
   float pending_distance_m;
   bool walking;

@@ -240,6 +240,7 @@ void imu_drain_fifo(app_t *app) {
     app->imu_error = true;
     return;
   }
+  app->imu_error = false;
 
   float lsb_per_g = icm20649_accel_lsb_per_g(app->imu);
   float lsb_per_dps = icm20649_gyro_lsb_per_dps(app->imu);
