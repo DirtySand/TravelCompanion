@@ -1,6 +1,7 @@
 #ifndef SAMPLE_H
 #define SAMPLE_H
 
+#include "csv.h"
 #include "ds3231.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -45,5 +46,10 @@ typedef struct {
 
 size_t sample_csv_header(char *out, size_t size);
 size_t sample_to_csv(const sample_t *sample, char *out, size_t size);
+
+// Shared with the full log (full_record.c).
+const char *sample_gps_text(sample_gps_t gps);
+void sample_append_utc(csv_t *csv, const ds3231_datetime_t *utc,
+                       bool time_valid);
 
 #endif // SAMPLE_H

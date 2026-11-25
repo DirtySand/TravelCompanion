@@ -38,6 +38,9 @@ static void handle_ok(app_t *app) {
   case CARD_AREA:
     tools_ok(app);
     break;
+  case CARD_LOG:
+    full_log_toggle(app);
+    break;
   case CARD_BACKPACK:
     buttons_wait_release(BUTTON_OK);
     enter_backpack_mode(app);
@@ -102,6 +105,7 @@ void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
   }
   update_shift(app);
   nav_update(app);
+  full_log_service(app);
 
   bool scheduled = time_reached(*next_refresh);
   bool fast_due =
@@ -127,6 +131,7 @@ void run_manual_cycle(app_t *app, absolute_time_t *next_refresh) {
       absolute_time_diff_us(app->fast_refresh_at, wake_at) > 0) {
     wake_at = app->fast_refresh_at;
   }
+  wake_at = full_log_wake_at(app, wake_at);
   while (!buttons_has_events() && !app->refresh_now && !rtc_alarm_pending() &&
          !best_effort_wfe_or_timeout(wake_at)) {
     gps_service(app);

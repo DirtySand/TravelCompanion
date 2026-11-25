@@ -3,6 +3,7 @@ add_library(app STATIC
     app_cards.c
     app_common.c
     app_compass.c
+    app_full_log.c
     app_gps.c
     app_imu.c
     app_manual.c
@@ -17,5 +18,5 @@ target_link_libraries(app PUBLIC
     pico_stdlib hardware_i2c hardware_clocks pico_rand board_config i2c_bus
     bme680_port ssd1351_port ds3231_port sht40_port neo6m_port qmc5883l_port icm20649_port
     buttons power timezone datetime_utils time_sync
-    ui compass motion nav wp_flash sample sd_log log
+    ui compass motion nav wp_flash sample full_record sd_log log
 )

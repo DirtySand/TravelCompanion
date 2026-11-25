@@ -3,9 +3,14 @@
 
   keygen   create the recipient key pair; writes the private key file and
            the firmware header with the public key (config/log_pubkey.h)
-  decrypt  decrypt one or more .TCL files from the SD card to CSV
-           (waypoint lines "#WP,..." go to <output>_waypoints.csv when -o
-           is given, otherwise they are printed with the rest)
+  decrypt  decrypt one or more .TCL files from the SD card to CSV.
+           With -o out.csv the tagged lines go to their own files:
+             "#WP,..." waypoints     -> out_waypoints.csv
+             "#F,..."  full log      -> out_full.csv
+             "#I,..."  raw IMU (full log) -> out_imu.csv
+             "#H,..."  full log starts (scales, axes) -> out_fullmeta.csv
+           (a file is created only if the log contains such lines).
+           Without -o everything is printed as it is.
 
 File format: see src/logging/log_crypto.h in the firmware.
 Requires PyNaCl:  python3 -m pip install pynacl
@@ -60,16 +65,39 @@ def load_secret(path):
     return secret
 
 
-WAYPOINT_PREFIX = "#WP,"
-WAYPOINT_HEADER = "id,utc,lat,lon,alt_m,east_m,north_m,track_m,session\n"
+# Tagged lines: prefix -> (output file suffix, CSV header).
+# The #F columns must match src/logging/full_record.c.
+STREAMS = {
+    "#WP,": ("_waypoints.csv",
+             "id,utc,lat,lon,alt_m,east_m,north_m,track_m,session\n"),
+    "#F,": ("_full.csv",
+            "utc,time_ok,t_ms,"
+            "temp_c,rh_pct,press_hpa,"
+            "gps,fixq,lat,lon,alt_m,spd_kmh,crs_deg,sats,hdop,sats_view,cn0,"
+            "baro_alt_m,alt_ref,asc_m,desc_m,"
+            "hdg_true,hdg_mag,hdg_ref,pitch_deg,roll_deg,field_ut,incl_deg,"
+            "mag_x_ut,mag_y_ut,mag_z_ut,"
+            "acc_x_g,acc_y_g,acc_z_g,gyr_x_dps,gyr_y_dps,gyr_z_dps,"
+            "imu_frames,imu_ovf,imu_temp_c,"
+            "steps,cadence_spm,walking,track_m,trip,trip_steps,trip_m,"
+            "pos_src,east_m,north_m,sigma_m,pos_lat,pos_lon,"
+            "dr_east_m,dr_north_m\n"),
+    "#I,": ("_imu.csv", "t_ms,ax,ay,az,gx,gy,gz\n"),
+    "#H,": ("_fullmeta.csv",
+            "utc,time_ok,t_ms,session,period_ms,imu_period_us,"
+            "acc_lsb_per_g,gyr_lsb_per_dps,imu_fwd,imu_right,imu_down,"
+            "mag_fwd,mag_right,mag_down,decl_deg\n"),
+}
 
 
 class LineRouter:
-    """Splits the decrypted text into lines; waypoint lines go elsewhere."""
+    """Splits the decrypted text into lines; tagged lines go to their own
+    files (opened on first use) when an output stem is given."""
 
-    def __init__(self, out, waypoints):
+    def __init__(self, out, stem):
         self.out = out
-        self.waypoints = waypoints
+        self.stem = stem
+        self.files = {}
         self.pending = ""
 
     def write(self, text):
@@ -78,16 +106,28 @@ class LineRouter:
             line, self.pending = self.pending.split("\n", 1)
             self._route(line + "\n")
 
+    def _stream(self, prefix):
+        if prefix not in self.files:
+            suffix, header = STREAMS[prefix]
+            f = open(self.stem + suffix, "w", newline="")
+            f.write(header)
+            self.files[prefix] = f
+        return self.files[prefix]
+
     def _route(self, line):
-        if self.waypoints is not None and line.startswith(WAYPOINT_PREFIX):
-            self.waypoints.write(line[len(WAYPOINT_PREFIX):])
-        else:
-            self.out.write(line)
+        if self.stem is not None:
+            for prefix in STREAMS:
+                if line.startswith(prefix):
+                    self._stream(prefix).write(line[len(prefix):])
+                    return
+        self.out.write(line)
 
     def close(self):
         if self.pending:
             self._route(self.pending)
             self.pending = ""
+        for f in self.files.values():
+            f.close()
 
 
 def decrypt_file(path, secret, out):
@@ -136,21 +176,16 @@ def decrypt_file(path, secret, out):
 def decrypt(args):
     secret = load_secret(args.private_key)
     out = open(args.output, "w", newline="") if args.output else sys.stdout
-    waypoints = None
-    if args.output:
-        stem, _ = os.path.splitext(args.output)
-        waypoints = open(stem + "_waypoints.csv", "w", newline="")
-        waypoints.write(WAYPOINT_HEADER)
-    router = LineRouter(out, waypoints)
+    stem = os.path.splitext(args.output)[0] if args.output else None
+    router = LineRouter(out, stem)
     ok = True
     try:
         for path in args.files:
             ok = decrypt_file(path, secret, router) and ok
-        router.close()
     finally:
+        router.close()
         if args.output:
             out.close()
-            waypoints.close()
     sys.exit(0 if ok else 1)
 
 

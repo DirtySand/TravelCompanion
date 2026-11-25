@@ -31,6 +31,10 @@ static void hide_backpack_view(app_t *app) {
 }
 
 void enter_backpack_mode(app_t *app) {
+  if (app->full_log.active) {
+    set_status(app, "Stop LOG first", UI_COLOR_RED);
+    return;
+  }
   if (app->time_invalid) {
     set_status(app, "Sync time first", UI_COLOR_RED);
     return;

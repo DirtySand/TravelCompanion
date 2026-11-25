@@ -6,7 +6,7 @@ OUT="${TMPDIR:-/tmp}/tc-tests"
 mkdir -p "$OUT"
 CC="${CC:-cc}"
 CFLAGS="-std=c11 -Wall -Wextra -Werror"
-INC="-Idrivers/bme680 -Idrivers/ds3231 -Idrivers/neo6m -Isrc/time -Isrc/motion -Isrc/nav"
+INC="-Iconfig -Idrivers/bme680 -Idrivers/ds3231 -Idrivers/neo6m -Isrc/time -Isrc/motion -Isrc/nav -Isrc/logging"
 
 build_and_run() {
   name="$1"
@@ -20,4 +20,5 @@ build_and_run test_rtc drivers/ds3231/ds3231.c src/time/time_sync.c
 build_and_run test_steps src/motion/steps.c
 build_and_run test_datetime src/time/datetime_utils.c src/time/timezone.c
 build_and_run test_fusion src/nav/fusion.c src/nav/geo.c
+build_and_run test_full_record src/logging/full_record.c src/logging/sample.c src/logging/csv.c
 echo "all host tests passed"

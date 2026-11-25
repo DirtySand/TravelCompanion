@@ -103,12 +103,18 @@ static bool write_all(const void *data, size_t length) {
          written == length;
 }
 
-static bool flush_buffer(uint32_t now_s) {
+// RAM buffer -> file, without committing the FAT entry (cheap, used when the
+// buffer is full). flush_buffer() also commits it (f_sync).
+static bool drain_buffer(void) {
   if (buffered > 0 && !write_all(buffer, buffered)) {
     return false;
   }
   buffered = 0;
-  if (f_sync(&file) != FR_OK) {
+  return true;
+}
+
+static bool flush_buffer(uint32_t now_s) {
+  if (!drain_buffer() || f_sync(&file) != FR_OK) {
     return false;
   }
   last_flush_s = now_s;
@@ -181,7 +187,7 @@ void sd_log_append(const char *line, size_t length,
     }
   }
   if (sizeof(buffer) - buffered < LOG_CRYPTO_RECORD_OVERHEAD + length &&
-      !flush_buffer(now_s)) {
+      !drain_buffer()) {
     shut_down(SD_LOG_ERROR);
     return;
   }

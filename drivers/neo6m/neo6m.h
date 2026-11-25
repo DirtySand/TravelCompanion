@@ -68,6 +68,9 @@ neo6m_status_t neo6m_power_off(neo6m_t *dev);
 neo6m_status_t neo6m_power_on(neo6m_t *dev);
 neo6m_status_t neo6m_wake(neo6m_t *dev);
 neo6m_status_t neo6m_configure_power_save(neo6m_t *dev);
+// CFG-RXM lpMode: true = Power Save Mode (PM2 cyclic), false = continuous
+// (Max Performance, a fix every second, highest current).
+neo6m_status_t neo6m_set_power_save(neo6m_t *dev, bool enabled);
 neo6m_status_t neo6m_poll_time_info(neo6m_t *dev);
 
 #endif // NEO6M_H

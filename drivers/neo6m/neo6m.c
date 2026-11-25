@@ -55,6 +55,7 @@
 #define UBX_ID_CFG_RXM 0x11
 #define UBX_ID_CFG_SBAS 0x16
 #define UBX_CFG_RXM_RESERVED1 8u
+#define UBX_CFG_RXM_LP_CONTINUOUS 0u
 #define UBX_CFG_RXM_LP_POWER_SAVE 1u
 #define UBX_CFG_SBAS_PAYLOAD 8
 #define NMEA_CLASS 0xF0
@@ -563,8 +564,6 @@ neo6m_status_t neo6m_configure_power_save(neo6m_t *dev) {
   if (dev == NULL) {
     return NEO6M_NULL_PTR;
   }
-  static const uint8_t rxm[2] = {UBX_CFG_RXM_RESERVED1,
-                                 UBX_CFG_RXM_LP_POWER_SAVE};
   static const uint8_t sbas_off[UBX_CFG_SBAS_PAYLOAD] = {0};
   neo6m_status_t status = ubx_send(dev, UBX_CLASS_CFG, UBX_ID_CFG_SBAS,
                                    sbas_off, sizeof(sbas_off));
@@ -578,9 +577,19 @@ neo6m_status_t neo6m_configure_power_save(neo6m_t *dev) {
     status = set_nmea_rate(dev, NMEA_ID_VTG, 0);
   }
   if (status == NEO6M_OK) {
-    status = ubx_send(dev, UBX_CLASS_CFG, UBX_ID_CFG_RXM, rxm, sizeof(rxm));
+    status = neo6m_set_power_save(dev, true);
   }
   return status;
+}
+
+neo6m_status_t neo6m_set_power_save(neo6m_t *dev, bool enabled) {
+  if (dev == NULL) {
+    return NEO6M_NULL_PTR;
+  }
+  const uint8_t rxm[2] = {UBX_CFG_RXM_RESERVED1,
+                          enabled ? UBX_CFG_RXM_LP_POWER_SAVE
+                                  : UBX_CFG_RXM_LP_CONTINUOUS};
+  return ubx_send(dev, UBX_CLASS_CFG, UBX_ID_CFG_RXM, rxm, sizeof(rxm));
 }
 
 neo6m_status_t neo6m_poll_time_info(neo6m_t *dev) {

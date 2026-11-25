@@ -141,6 +141,25 @@ typedef struct {
   float azimuth_deg;
 } cards_sun_t;
 
+typedef enum {
+  CARDS_SD_NO_CARD,
+  CARDS_SD_READY,
+  CARDS_SD_ERROR,
+} cards_sd_t;
+
+typedef struct {
+  bool active;
+  uint32_t elapsed_s;
+  uint32_t period_ms;
+  uint32_t records;
+  bool raw_imu;
+  uint32_t imu_frames;
+  uint32_t imu_overflows;
+  uint64_t bytes;
+  cards_sd_t sd;
+  bool gps_on;
+} cards_log_t;
+
 void cards_nav(const cards_nav_t *c, ui_row_t *rows);
 void cards_alt(const cards_alt_t *c, ui_row_t *rows);
 void cards_wpt(const cards_wpt_t *c, ui_row_t *rows);
@@ -148,5 +167,6 @@ void cards_dist(const cards_dist_t *c, ui_row_t *rows);
 void cards_line(const cards_line_t *c, ui_row_t *rows);
 void cards_area(const cards_area_t *c, ui_row_t *rows);
 void cards_sun(const cards_sun_t *c, ui_row_t *rows);
+void cards_log(const cards_log_t *c, ui_row_t *rows);
 
 #endif // CARDS_H

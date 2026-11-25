@@ -24,7 +24,7 @@ static const char *const card_titles[CARD_COUNT] = {
     [CARD_WPT] = "WPT",         [CARD_DIST] = "DIST",
     [CARD_LINE] = "LINE",       [CARD_AREA] = "AREA",
     [CARD_SUN] = "SUN",         [CARD_IMU] = "IMU",
-    [CARD_BACKPACK] = "PACK",
+    [CARD_LOG] = "LOG",         [CARD_BACKPACK] = "PACK",
 };
 
 // ---------------------------------------------------------------------------
@@ -271,7 +271,13 @@ static const char *card_hint(const app_t *app, uint16_t *color) {
     default:
       return "OK: start";
     }
+  case CARD_LOG:
+    return app->full_log.active ? "OK: stop" : "OK: start";
   case CARD_BACKPACK:
+    if (app->full_log.active) {
+      *color = UI_COLOR_YELLOW;
+      return "Stop LOG first";
+    }
     return app->time_invalid ? "" : "OK: start";
   default:
     return "";
@@ -293,7 +299,8 @@ static uint16_t sd_tag_color(void) {
 static void draw_footer(app_t *app) {
   ui_tag_t tags[2];
   uint8_t count = 0;
-  tags[count++] = (ui_tag_t){.text = "SD", .color = sd_tag_color()};
+  tags[count++] = (ui_tag_t){.text = app->full_log.active ? "REC" : "SD",
+                             .color = sd_tag_color()};
   bool gps_card = app->card == CARD_POSITION || app->card == CARD_SATELLITES;
   if (app->gps_enabled && !gps_card) {
     tags[count++] = (ui_tag_t){.text = "GPS", .color = gps_tag_color(app)};
@@ -355,6 +362,9 @@ void draw_current_card(app_t *app, bool scheduled) {
     break;
   case CARD_IMU:
     draw_imu_card(app);
+    break;
+  case CARD_LOG:
+    draw_log_card(app);
     break;
   case CARD_BACKPACK:
     ui_draw_backpack_card(app->oled, !app->time_invalid,

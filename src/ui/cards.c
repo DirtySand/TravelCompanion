@@ -411,3 +411,53 @@ void cards_sun(const cards_sun_t *c, ui_row_t *rows) {
   bearing_row(rows, 8, "Az:", c->azimuth_deg);
   set_row(rows, 9, UI_COLOR_GRAY, "Pos: %s", c->position_source);
 }
+
+static void bytes_row(ui_row_t *rows, uint8_t row, uint64_t bytes) {
+  if (bytes < 1000000u) {
+    set_row(rows, row, UI_COLOR_WHITE, "Data: %.1f kB", (double)bytes / 1e3);
+  } else {
+    set_row(rows, row, UI_COLOR_WHITE, "Data: %.1f MB", (double)bytes / 1e6);
+  }
+}
+
+void cards_log(const cards_log_t *c, ui_row_t *rows) {
+  clear_rows(rows);
+  static const struct {
+    const char *text;
+    uint16_t color;
+  } sd[] = {
+      [CARDS_SD_NO_CARD] = {"SD: no card", UI_COLOR_YELLOW},
+      [CARDS_SD_READY] = {"SD: ready", UI_COLOR_GREEN},
+      [CARDS_SD_ERROR] = {"SD: ERROR", UI_COLOR_RED},
+  };
+  if (c->active) {
+    set_row(rows, 0, UI_COLOR_GREEN, "Full log: ON");
+    set_row(rows, 1, UI_COLOR_WHITE, "Time: %luh%02lum%02lu",
+            (unsigned long)(c->elapsed_s / 3600u),
+            (unsigned long)(c->elapsed_s / 60u % 60u),
+            (unsigned long)(c->elapsed_s % 60u));
+  } else {
+    set_row(rows, 0, UI_COLOR_GRAY, "Full log: OFF");
+    set_row(rows, 1, UI_COLOR_GRAY, "Time: ---");
+  }
+  set_row(rows, 2, UI_COLOR_WHITE, "Every: %.1f s",
+          (double)c->period_ms / 1000.0);
+  set_row(rows, 3, UI_COLOR_WHITE, "Rec: %lu", (unsigned long)c->records);
+  if (c->raw_imu) {
+    set_row(rows, 4, UI_COLOR_WHITE, "Raw: %lu", (unsigned long)c->imu_frames);
+  } else {
+    set_row(rows, 4, UI_COLOR_GRAY, "Raw IMU: off");
+  }
+  bytes_row(rows, 5, c->bytes);
+  set_row(rows, 6, sd[c->sd].color, "%s", sd[c->sd].text);
+  if (!c->gps_on) {
+    set_row(rows, 7, UI_COLOR_GRAY, "GPS: off");
+  } else {
+    set_row(rows, 7, UI_COLOR_WHITE, c->active ? "GPS: max perf" : "GPS: PSM");
+  }
+  set_row(rows, 8, (c->imu_overflows > 0) ? UI_COLOR_YELLOW : UI_COLOR_GRAY,
+          "IMU ovf: %lu", (unsigned long)c->imu_overflows);
+  if (!c->active) {
+    set_row(rows, 9, UI_COLOR_YELLOW, "High power!");
+  }
+}

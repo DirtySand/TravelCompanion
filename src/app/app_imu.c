@@ -16,6 +16,7 @@
 #define IMU_FIFO_FRAME_BYTES 12
 #define IMU_FIFO_MAX_FRAMES (4096 / IMU_FIFO_FRAME_BYTES)
 #define IMU_SAMPLE_PERIOD_S ((1.0f + IMU_GYRO_RATE_DIV) / 1100.0f)
+#define IMU_SAMPLE_PERIOD_US ((1u + IMU_GYRO_RATE_DIV) * 1000000u / 1100u)
 #define IMU_FIFO_CHECK_FRAMES 10
 #define STANDARD_GRAVITY_MS2 9.80665f
 
@@ -200,6 +201,7 @@ static void imu_count_steps(app_t *app, const compass_vec_t *accel_g) {
   uint8_t steps = steps_update(&app->steps, dynamic_ms2, IMU_SAMPLE_PERIOD_S,
                                &distance_m);
   if (steps > 0) {
+    app->steps_total += steps;
     float heading_deg = 0.0f;
     bool heading_valid = walking_heading(app, &heading_deg, NULL);
     if (trip_running(&app->trip)) {
@@ -241,21 +243,26 @@ void imu_drain_fifo(app_t *app) {
     return;
   }
   app->imu_error = false;
+  uint64_t read_us = time_us_64();
 
   float lsb_per_g = icm20649_accel_lsb_per_g(app->imu);
   float lsb_per_dps = icm20649_gyro_lsb_per_dps(app->imu);
   float accel_norm_sum = 0.0f;
   for (uint16_t i = 0; i < frames; i++) {
     const uint8_t *frame = &buffer[i * IMU_FIFO_FRAME_BYTES];
+    int16_t raw[6];
+    for (uint8_t axis = 0; axis < 6; axis++) {
+      raw[axis] = be16(&frame[2u * axis]);
+    }
     compass_vec_t accel = {
-        .x = (float)be16(&frame[0]) / lsb_per_g,
-        .y = (float)be16(&frame[2]) / lsb_per_g,
-        .z = (float)be16(&frame[4]) / lsb_per_g,
+        .x = (float)raw[0] / lsb_per_g,
+        .y = (float)raw[1] / lsb_per_g,
+        .z = (float)raw[2] / lsb_per_g,
     };
     compass_vec_t gyro = {
-        .x = (float)be16(&frame[6]) / lsb_per_dps,
-        .y = (float)be16(&frame[8]) / lsb_per_dps,
-        .z = (float)be16(&frame[10]) / lsb_per_dps,
+        .x = (float)raw[3] / lsb_per_dps,
+        .y = (float)raw[4] / lsb_per_dps,
+        .z = (float)raw[5] / lsb_per_dps,
     };
     accel_norm_sum +=
         sqrtf(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
@@ -263,14 +270,20 @@ void imu_drain_fifo(app_t *app) {
     compass_to_device(&imu_axes, &gyro, &gyro);
     attitude_update_imu(&app->attitude, &accel, &gyro, IMU_SAMPLE_PERIOD_S);
     imu_count_steps(app, &accel);
+    uint64_t frame_us =
+        read_us - (uint64_t)(frames - 1u - i) * IMU_SAMPLE_PERIOD_US;
+    full_log_imu_frame(app, raw, frame_us, &accel, &gyro);
   }
   imu_check_frames(app, accel_norm_sum, frames);
 
   if (overflow) {
+    full_log_imu_overflow(app);
     LOG("ICM-20649 FIFO overflow - restarting it\n");
     imu_fifo_start(app);
   }
 }
+
+uint32_t imu_sample_period_us(void) { return IMU_SAMPLE_PERIOD_US; }
 
 // ---------------------------------------------------------------------------
 // IMU card

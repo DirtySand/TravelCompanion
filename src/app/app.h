@@ -29,6 +29,7 @@
 #define MS_TO_KMH 3.6f
 #define PDR_MIN_RANGE_M 1.0f
 #define AREA_MAX_POINTS 32
+#define FULL_LOG_CHUNK_MAX 960u
 
 #define BUTTON_PREV_CARD BUTTON_BOTTOM_LEFT
 #define BUTTON_NEXT_CARD BUTTON_BOTTOM_RIGHT
@@ -55,6 +56,7 @@ typedef enum {
   CARD_AREA,
   CARD_SUN,
   CARD_IMU,
+  CARD_LOG,
   CARD_BACKPACK,
   CARD_COUNT,
 } card_t;
@@ -63,6 +65,7 @@ typedef enum {
   GPS_CMD_CONFIGURE = 1u << 0,
   GPS_CMD_POLL_TIME = 1u << 1,
   GPS_CMD_POWER_OFF = 1u << 2,
+  GPS_CMD_POWER_MODE = 1u << 3,
 } gps_command_t;
 
 typedef struct {
@@ -107,6 +110,24 @@ typedef enum {
   CONFIRM_WPT_CLEAR,
   CONFIRM_AREA_CLEAR,
 } confirm_action_t;
+
+typedef struct {
+  bool active;
+  uint64_t started_us;
+  absolute_time_t next_at;
+  uint32_t records;
+  uint32_t imu_frames;
+  uint32_t imu_overflows;
+  uint64_t bytes;
+  uint32_t period_frames;
+  compass_vec_t accel_sum_g;
+  compass_vec_t gyro_sum_dps;
+  bool time_valid;
+  ds3231_datetime_t utc;
+  uint32_t utc_s;
+  size_t chunk_length;
+  char chunk[FULL_LOG_CHUNK_MAX];
+} full_log_t;
 
 typedef struct {
   ssd1351_t *oled;
@@ -215,6 +236,8 @@ typedef struct {
   float line_base_m;
   measure_point_t area[AREA_MAX_POINTS];
   uint16_t area_count;
+  uint32_t steps_total;
+  full_log_t full_log;
 } app_t;
 
 // app_common.c
@@ -265,6 +288,7 @@ void imu_set_running(app_t *app, bool running);
 bool walking_heading(app_t *app, float *heading_deg,
                      ui_compass_ref_t *reference);
 void imu_drain_fifo(app_t *app);
+uint32_t imu_sample_period_us(void);
 void draw_imu_card(app_t *app);
 
 // app_trip.c
@@ -307,6 +331,16 @@ uint32_t fast_refresh_ms(const app_t *app);
 void draw_current_card(app_t *app, bool scheduled);
 void apply_shift(const app_t *app);
 void update_shift(app_t *app);
+
+// app_full_log.c
+void full_log_toggle(app_t *app);
+void full_log_service(app_t *app);
+absolute_time_t full_log_wake_at(const app_t *app, absolute_time_t wake_at);
+void full_log_imu_frame(app_t *app, const int16_t raw[6], uint64_t frame_us,
+                        const compass_vec_t *accel_g,
+                        const compass_vec_t *gyro_dps);
+void full_log_imu_overflow(app_t *app);
+void draw_log_card(app_t *app);
 
 // app_backpack.c
 void enter_backpack_mode(app_t *app);

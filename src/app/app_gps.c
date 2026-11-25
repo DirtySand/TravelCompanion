@@ -38,7 +38,8 @@ static bool gps_utc_seconds(const neo6m_data_t *data, uint32_t *seconds) {
 
 void gps_request(app_t *app, gps_command_t command) {
   if (command == GPS_CMD_POWER_OFF) {
-    app->gps_commands &= ~(uint32_t)(GPS_CMD_CONFIGURE | GPS_CMD_POLL_TIME);
+    app->gps_commands &= ~(uint32_t)(GPS_CMD_CONFIGURE | GPS_CMD_POLL_TIME |
+                                     GPS_CMD_POWER_MODE);
   } else if (command == GPS_CMD_CONFIGURE) {
     app->gps_commands &= ~(uint32_t)GPS_CMD_POWER_OFF;
   }
@@ -47,8 +48,14 @@ void gps_request(app_t *app, gps_command_t command) {
 
 static void gps_send_commands(app_t *app) {
   neo6m_status_t status = NEO6M_OK;
+  bool continuous = app->full_log.active;
   if (app->gps_commands & GPS_CMD_CONFIGURE) {
     status = neo6m_configure_power_save(app->gps);
+  }
+  bool mode_needed = (app->gps_commands & GPS_CMD_POWER_MODE) ||
+                     ((app->gps_commands & GPS_CMD_CONFIGURE) && continuous);
+  if (status == NEO6M_OK && mode_needed) {
+    status = neo6m_set_power_save(app->gps, !continuous);
   }
   if (status == NEO6M_OK && (app->gps_commands & GPS_CMD_POLL_TIME)) {
     status = neo6m_poll_time_info(app->gps);
