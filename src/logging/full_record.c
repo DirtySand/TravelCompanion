@@ -1,18 +1,6 @@
 #include "full_record.h"
 #include "csv.h"
 
-// #F columns (tools/tclog.py writes the same names as the CSV header):
-//   utc,time_ok,t_ms,
-//   temp_c,rh_pct,press_hpa,
-//   gps,fixq,lat,lon,alt_m,spd_kmh,crs_deg,sats,hdop,sats_view,cn0,
-//   baro_alt_m,alt_ref,asc_m,desc_m,
-//   hdg_true,hdg_mag,hdg_ref,pitch_deg,roll_deg,field_ut,incl_deg,
-//   mag_x_ut,mag_y_ut,mag_z_ut,
-//   acc_x_g,acc_y_g,acc_z_g,gyr_x_dps,gyr_y_dps,gyr_z_dps,imu_frames,imu_ovf,
-//   imu_temp_c,
-//   steps,cadence_spm,walking,track_m,trip,trip_steps,trip_m,
-//   pos_src,east_m,north_m,sigma_m,pos_lat,pos_lon,dr_east_m,dr_north_m
-
 static void append_text(csv_t *csv, bool valid, const char *text) {
   csv_append(csv, ",%s", valid ? text : "");
 }

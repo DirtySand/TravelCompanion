@@ -7,12 +7,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Line formats of the full log, written into the same encrypted log as the
-// 10 s samples. Every line starts with a tag so tools/tclog.py can split them:
-//   #H  one meta line per start (scales, axes, period)
-//   #F  one line per full-log period (everything the device knows)
-//   #I  one line per raw IMU FIFO frame (chip frame, raw counts)
-
 #define FULL_RECORD_CSV_MAX 512u
 #define FULL_RECORD_COLUMNS 55u
 #define FULL_IMU_CSV_MAX 64u

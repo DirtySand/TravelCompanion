@@ -103,8 +103,6 @@ static bool write_all(const void *data, size_t length) {
          written == length;
 }
 
-// RAM buffer -> file, without committing the FAT entry (cheap, used when the
-// buffer is full). flush_buffer() also commits it (f_sync).
 static bool drain_buffer(void) {
   if (buffered > 0 && !write_all(buffer, buffered)) {
     return false;

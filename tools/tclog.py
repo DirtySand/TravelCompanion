@@ -64,9 +64,6 @@ def load_secret(path):
         sys.exit(f"{path}: expected {KEY_SIZE} bytes of hex")
     return secret
 
-
-# Tagged lines: prefix -> (output file suffix, CSV header).
-# The #F columns must match src/logging/full_record.c.
 STREAMS = {
     "#WP,": ("_waypoints.csv",
              "id,utc,lat,lon,alt_m,east_m,north_m,track_m,session\n"),
@@ -88,7 +85,6 @@ STREAMS = {
             "acc_lsb_per_g,gyr_lsb_per_dps,imu_fwd,imu_right,imu_down,"
             "mag_fwd,mag_right,mag_down,decl_deg\n"),
 }
-
 
 class LineRouter:
     """Splits the decrypted text into lines; tagged lines go to their own

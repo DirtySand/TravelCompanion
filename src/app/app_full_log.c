@@ -7,11 +7,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Full log: while active (manual mode only), one #F record every
-// FULL_LOG_PERIOD_MS with everything the device knows, plus (FULL_LOG_RAW_IMU)
-// every IMU FIFO frame as an #I line. GPS runs continuously instead of in
-// Power Save Mode. Everything goes into the normal encrypted SD log.
-
 #define FULL_LOG_CLIMATE_MAX_AGE_MS 900
 #define FULL_LOG_PRESSURE_MAX_AGE_MS 1500
 
